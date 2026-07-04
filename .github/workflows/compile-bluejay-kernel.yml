@@ -8,11 +8,11 @@ on:
         required: true
         default: 'android-gs-bluejay-6.1-android16-dp'
       device_name:
-        description: 'Device code name (e.g., bluejay)'
+        description: 'Device code name'
         required: true
         default: 'bluejay'
       build_version:
-        description: 'Build version (e.g., BP2A.250705.008)'
+        description: 'Build version'
         required: true
         default: 'BP2A.250705.008'
       api_level:
@@ -24,7 +24,7 @@ jobs:
   compile-kernel:
     runs-on: ubuntu-latest
     timeout-minutes: 180
-    
+
     steps:
     - name: Checkout repository
       uses: actions/checkout@v4
@@ -44,6 +44,7 @@ jobs:
           gcc-aarch64-linux-gnu \
           g++-aarch64-linux-gnu \
           binutils-aarch64-linux-gnu \
+          zstd \
           pahole
 
     - name: Clone Android kernel
@@ -51,6 +52,7 @@ jobs:
         git clone https://android.googlesource.com/kernel/common \
           -b ${{ github.event.inputs.kernel_branch }} \
           --depth 1 kernel_src
+
         cd kernel_src
         git log --oneline -5
 
@@ -58,23 +60,21 @@ jobs:
       run: |
         cd kernel_src
         mkdir -p out
-        
-        # Use GKI defconfig
+
         make ARCH=arm64 O=out gki_defconfig
-        
-        # Enable debug symbols
+
         ./scripts/config --file out/.config \
           --enable DEBUG_INFO \
           --enable DEBUG_INFO_DWARF4 \
           --enable KALLSYMS \
           --enable KALLSYMS_ALL
-        
-        # Validate config
-        make ARCH=arm64 O=out oldconfig
+
+        make ARCH=arm64 O=out olddefconfig
 
     - name: Compile kernel
       run: |
         cd kernel_src
+
         make ARCH=arm64 \
           O=out \
           CROSS_COMPILE=aarch64-linux-gnu- \
@@ -85,23 +85,23 @@ jobs:
           OBJDUMP=aarch64-linux-gnu-objdump \
           STRIP=aarch64-linux-gnu-strip \
           -j$(nproc)
-    - name: Upload compiled kernel
-      uses: actions/upload-artifact@v4
-      with:
-        name: compiled-kernel-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}
-        path: |
-          kernel_src/out/arch/arm64/boot/Image*
-          kernel_src/out/vmlinux
-          kernel_src/out/System.map
-          kernel_src/out/Module.symvers
-          kernel_src/out/.config
-        retention-days: 30
+
     - name: Verify vmlinux
       run: |
         cd kernel_src
+
+        echo "===== vmlinux file info ====="
         file out/vmlinux
         ls -lh out/vmlinux
-        nm -S out/vmlinux | head -20
+
+        echo "===== vmlinux sections ====="
+        aarch64-linux-gnu-readelf -S out/vmlinux | grep -E '.text|.symtab|.strtab|.debug' || true
+
+        echo "===== First symbols ====="
+        aarch64-linux-gnu-nm -n out/vmlinux | head -30 || nm -n out/vmlinux | head -30
+
+        echo "===== Important symbols ====="
+        aarch64-linux-gnu-nm -n out/vmlinux | grep -E '_text$|_stext$|init_task$|selinux|security_hook_heads|kmalloc_caches' || true
 
     - name: Extract offsets using Python script
       run: |
@@ -121,58 +121,62 @@ jobs:
     - name: Copy offsets to target.h
       run: |
         cp kernel_src/extracted_offsets.h \
-           IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h
+          IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h
 
     - name: Test exploit compilation
       run: |
         cd IonStack/CVE-2026-43499/exploit
-        make PROJECT=${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }} \
-             API=${{ github.event.inputs.api_level }} \
-             info
 
-    - name: Upload offsets artifact
+        make PROJECT=${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }} \
+          API=${{ github.event.inputs.api_level }} \
+          info
+
+    - name: Archive kernel build
+      if: always()
+      run: |
+        tar -I 'zstd -19 -T0' \
+          -cf kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst \
+          -C kernel_src out extracted_offsets.h
+
+        ls -lh kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst
+
+    - name: Upload compressed kernel build artifact
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: kernel-offsets-${{ github.event.inputs.device_name }}
+        name: kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}
+        path: kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst
+        retention-days: 30
+
+    - name: Upload offsets artifact
+      if: always()
+      uses: actions/upload-artifact@v4
+      with:
+        name: kernel-offsets-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}
         path: kernel_src/extracted_offsets.h
         retention-days: 30
 
-    - name: Upload vmlinux artifact
-      uses: actions/upload-artifact@v4
-      with:
-        name: vmlinux-${{ github.event.inputs.device_name }}
-        path: kernel_src/out/vmlinux
-        retention-days: 30
-
     - name: Upload target.h artifact
+      if: always()
       uses: actions/upload-artifact@v4
       with:
-        name: target-h-${{ github.event.inputs.device_name }}
+        name: target-h-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}
         path: IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h
-        retention-days: 30
-
-    - name: Upload kernel config
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-config-${{ github.event.inputs.device_name }}
-        path: kernel_src/out/.config
         retention-days: 30
 
     - name: Build summary
       if: always()
       run: |
         echo "========================================="
-        echo "     Kernel Compilation Summary"
+        echo "Kernel Compilation Summary"
         echo "========================================="
         echo "Device: ${{ github.event.inputs.device_name }}"
         echo "Build Version: ${{ github.event.inputs.build_version }}"
         echo "Kernel Branch: ${{ github.event.inputs.kernel_branch }}"
         echo "API Level: ${{ github.event.inputs.api_level }}"
         echo ""
-        echo "Generated Files:"
-        echo "  - target.h: IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h"
-        echo "  - vmlinux: kernel_src/out/vmlinux"
-        echo "  - Offsets: kernel_src/extracted_offsets.h"
-        echo ""
-        echo "Compilation Status: ✓ Complete"
+        echo "Artifacts:"
+        echo "  - compressed kernel build"
+        echo "  - extracted_offsets.h"
+        echo "  - target.h"
         echo "========================================="
