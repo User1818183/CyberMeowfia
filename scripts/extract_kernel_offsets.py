@@ -125,71 +125,115 @@ STATIC_OFFSETS = {
 def extract_offsets_from_vmlinux(vmlinux_path):
     """Extract kernel offsets from vmlinux using nm."""
     print(f"[*] Extracting offsets from: {vmlinux_path}")
-    
+
     if not os.path.exists(vmlinux_path):
         print(f"[-] Error: vmlinux not found at {vmlinux_path}")
         sys.exit(1)
-    
-    # Run nm to get symbols
+
+    # Prefer cross nm if available
+    nm_cmd = "aarch64-linux-gnu-nm"
+    try:
+        subprocess.run([nm_cmd, "--version"],
+                       stdout=subprocess.DEVNULL,
+                       stderr=subprocess.DEVNULL,
+                       check=True)
+    except Exception:
+        nm_cmd = "nm"
+
+    print(f"[*] Using nm: {nm_cmd}")
+
     try:
         result = subprocess.run(
-            ['nm', '-S', vmlinux_path],
+            [nm_cmd, "-n", vmlinux_path],
             capture_output=True,
             text=True,
             check=True
         )
     except subprocess.CalledProcessError as e:
         print(f"[-] Error running nm: {e}")
+        print(e.stderr)
         sys.exit(1)
     except FileNotFoundError:
-        print("[-] Error: 'nm' command not found. Install binutils.")
+        print("[-] Error: nm not found")
         sys.exit(1)
-    
-    # Parse symbols and calculate offsets
-    symbols_dict = {}
-    
-    for line in result.stdout.split('\n'):
-        if not line.strip():
-            continue
-        
+
+    # Auto-detect kernel text base (_text or _stext)
+    text_base = None
+
+    for line in result.stdout.splitlines():
         parts = line.split()
         if len(parts) < 3:
             continue
-        
-        try:
-            addr_str = parts[0]
-            symbol = parts[-1]
-            
-            # Skip unknown addresses
-            if addr_str == '0000000000000000':
-                continue
-            
-            addr = int(addr_str, 16)
-            offset = addr - KIMAGE_TEXT_BASE
-            
-            # Only store valid offsets
-            if offset > 0:
-                symbols_dict[symbol] = offset
-        except (ValueError, IndexError):
+
+        symbol = parts[-1]
+        if symbol in ("_text", "_stext"):
+            text_base = int(parts[0], 16)
+            break
+
+    if text_base is None:
+        print("[!] _text/_stext not found, using default KIMAGE_TEXT_BASE")
+        text_base = KIMAGE_TEXT_BASE
+
+    print(f"[*] Kernel text base: 0x{text_base:x}")
+
+    symbols_dict = {}
+
+    for line in result.stdout.splitlines():
+        if not line.strip():
             continue
-    
+
+        parts = line.split()
+        if len(parts) < 3:
+            continue
+
+        try:
+            addr = int(parts[0], 16)
+            symbol = parts[-1]
+
+            if addr == 0:
+                continue
+
+            offset = addr - text_base
+
+            if offset >= 0:
+                symbols_dict[symbol] = offset
+
+        except ValueError:
+            continue
+
     if not symbols_dict:
         print("[-] Error: No symbols extracted from vmlinux")
+        print("\nFirst 20 lines of nm output:")
+        print("\n".join(result.stdout.splitlines()[:20]))
         sys.exit(1)
-    
+
     print(f"[+] Found {len(symbols_dict)} symbols")
-    
-    # Filter for required symbols
+
     found_offsets = {}
-    
+
     for symbol, offset in symbols_dict.items():
         for required in REQUIRED_SYMBOLS:
             if required.lower() in symbol.lower():
                 found_offsets[symbol] = offset
                 break
-    
+
     print(f"[+] Matched {len(found_offsets)} required symbols")
-    
+
+    if not found_offsets:
+        print("\n[!] Available symbols containing interesting names:")
+        for symbol in sorted(symbols_dict.keys()):
+            if any(x in symbol.lower() for x in (
+                "task",
+                "selinux",
+                "security",
+                "pipe",
+                "cache",
+                "configfs",
+                "splice",
+                "logger",
+            )):
+                print(symbol)
+
     return found_offsets
 
 
