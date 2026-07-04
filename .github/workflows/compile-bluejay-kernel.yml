@@ -89,8 +89,7 @@ jobs:
       if: always()
       run: |
         tar -I 'zstd -19 -T0' \
-          -cf kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst \
-          -C kernel_src out extracted_offsets.h
+          -cf kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst 
 
         ls -lh kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst
 
