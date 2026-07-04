@@ -9,124 +9,32 @@ from pathlib import Path
 KIMAGE_TEXT_BASE_DEFAULT = 0xffffffc080000000
 
 BASE_SYMBOLS = [
-    {
-        "define": "ASHMEM_MISC_FOPS",
-        "candidates": ["ashmem_misc_fops", "ashmem_misc"],
-        "required": False,
-    },
-    {
-        "define": "ASHMEM_FOPS",
-        "candidates": ["ashmem_fops"],
-        "required": True,
-    },
-    {
-        "define": "ASHMEM_IOCTL",
-        "candidates": ["ashmem_ioctl"],
-        "required": True,
-    },
-    {
-        "define": "ASHMEM_COMPAT_IOCTL",
-        "candidates": ["ashmem_compat_ioctl", "compat_ashmem_ioctl"],
-        "required": True,
-    },
-    {
-        "define": "ASHMEM_MMAP",
-        "candidates": ["ashmem_mmap"],
-        "required": True,
-    },
-    {
-        "define": "ASHMEM_OPEN",
-        "candidates": ["ashmem_open"],
-        "required": True,
-    },
-    {
-        "define": "ASHMEM_RELEASE",
-        "candidates": ["ashmem_release"],
-        "required": True,
-    },
-    {
-        "define": "ASHMEM_SHOW_FDINFO",
-        "candidates": ["ashmem_show_fdinfo"],
-        "required": True,
-    },
-    {
-        "define": "CONFIGFS_READ_ITER",
-        "candidates": ["configfs_read_iter"],
-        "required": True,
-    },
-    {
-        "define": "CONFIGFS_BIN_WRITE_ITER",
-        "candidates": ["configfs_bin_write_iter"],
-        "required": True,
-    },
-    {
-        "define": "COPY_SPLICE_READ",
-        "candidates": ["copy_splice_read"],
-        "required": True,
-    },
-    {
-        "define": "NOOP_LLSEEK",
-        "candidates": ["noop_llseek"],
-        "required": True,
-    },
-    {
-        "define": "INIT_TASK",
-        "candidates": ["init_task"],
-        "required": True,
-    },
-    {
-        "define": "ROOT_TASK_GROUP",
-        "candidates": ["root_task_group"],
-        "required": True,
-    },
-    {
-        "define": "SELINUX_BLOB_SIZES",
-        "candidates": ["selinux_blob_sizes"],
-        "required": True,
-    },
-    {
-        "define": "SELINUX_ENFORCING",
-        "candidates": ["selinux_enforcing", "selinux_enforcing_boot"],
-        "required": True,
-    },
-    {
-        "define": "SECURITY_HOOK_HEADS",
-        "candidates": ["security_hook_heads"],
-        "required": True,
-    },
-    {
-        "define": "KMALLOC_CACHES",
-        "candidates": ["kmalloc_caches"],
-        "required": True,
-    },
-    {
-        "define": "ANON_PIPE_BUF_OPS",
-        "candidates": ["anon_pipe_buf_ops"],
-        "required": True,
-    },
+    {"define": "ASHMEM_MISC_FOPS", "candidates": ["ashmem_misc_fops", "ashmem_misc"], "required": False},
+    {"define": "ASHMEM_FOPS", "candidates": ["ashmem_fops"], "required": True},
+    {"define": "ASHMEM_IOCTL", "candidates": ["ashmem_ioctl"], "required": True},
+    {"define": "ASHMEM_COMPAT_IOCTL", "candidates": ["ashmem_compat_ioctl", "compat_ashmem_ioctl"], "required": True},
+    {"define": "ASHMEM_MMAP", "candidates": ["ashmem_mmap"], "required": True},
+    {"define": "ASHMEM_OPEN", "candidates": ["ashmem_open"], "required": True},
+    {"define": "ASHMEM_RELEASE", "candidates": ["ashmem_release"], "required": True},
+    {"define": "ASHMEM_SHOW_FDINFO", "candidates": ["ashmem_show_fdinfo"], "required": True},
+    {"define": "CONFIGFS_READ_ITER", "candidates": ["configfs_read_iter"], "required": True},
+    {"define": "CONFIGFS_BIN_WRITE_ITER", "candidates": ["configfs_bin_write_iter"], "required": True},
+    {"define": "COPY_SPLICE_READ", "candidates": ["copy_splice_read"], "required": True},
+    {"define": "NOOP_LLSEEK", "candidates": ["noop_llseek"], "required": True},
+    {"define": "INIT_TASK", "candidates": ["init_task"], "required": True},
+    {"define": "ROOT_TASK_GROUP", "candidates": ["root_task_group"], "required": True},
+    {"define": "SELINUX_BLOB_SIZES", "candidates": ["selinux_blob_sizes"], "required": True},
+    {"define": "SELINUX_ENFORCING", "candidates": ["selinux_enforcing", "selinux_enforcing_boot"], "required": True},
+    {"define": "SECURITY_HOOK_HEADS", "candidates": ["security_hook_heads"], "required": True},
+    {"define": "KMALLOC_CACHES", "candidates": ["kmalloc_caches"], "required": True},
+    {"define": "ANON_PIPE_BUF_OPS", "candidates": ["anon_pipe_buf_ops"], "required": True},
 ]
 
 SLIDE_SYMBOLS = [
-    {
-        "define": "SLIDE_NFULNL_LOGGER",
-        "candidates": ["nfulnl_logger"],
-        "required": True,
-    },
-    {
-        "define": "SLIDE_LOGGERS_0_1",
-        "candidates": ["loggers", "loggers_0_1"],
-        "required": True,
-    },
-    {
-        "define": "SLIDE_RANDOM_BOOT_ID_DATA",
-        "candidates": ["random_boot_id_data", "random_boot_id"],
-        "required": False,
-    },
-    {
-        "define": "SLIDE_SYSCTL_BOOTID",
-        "candidates": ["sysctl_bootid"],
-        "required": True,
-    },
+    {"define": "SLIDE_NFULNL_LOGGER", "candidates": ["nfulnl_logger"], "required": True},
+    {"define": "SLIDE_LOGGERS_0_1", "candidates": ["loggers", "loggers_0_1"], "required": True},
+    {"define": "SLIDE_RANDOM_BOOT_ID_DATA", "candidates": ["random_boot_id_data", "random_boot_id"], "required": False},
+    {"define": "SLIDE_SYSCTL_BOOTID", "candidates": ["sysctl_bootid"], "required": True},
 ]
 
 STATIC_OFFSETS = {
@@ -137,7 +45,6 @@ STATIC_OFFSETS = {
     "RIGHT_OFF": 0x4440,
     "LEFT_OFF": 0x5550,
     "FAKE_TASK_OFF": 0x3200,
-
     "WAITER_LOCAL_OFF": 0x80,
     "WAITER_TREE_ENTRY_OFF": 0x00,
     "WAITER_PI_TREE_ENTRY_OFF": 0x18,
@@ -147,7 +54,6 @@ STATIC_OFFSETS = {
     "WAITER_PRIO_OFF": 0x44,
     "WAITER_DEADLINE_OFF": 0x48,
     "WAITER_WW_CTX_OFF": 0x50,
-
     "FAKE_WAITER_TREE_PRIO_OFF": 0x18,
     "FAKE_WAITER_TREE_DEADLINE_OFF": 0x20,
     "FAKE_WAITER_PI_TREE_ENTRY_OFF": 0x28,
@@ -157,7 +63,6 @@ STATIC_OFFSETS = {
     "FAKE_WAITER_LOCK_OFF": 0x58,
     "FAKE_WAITER_WAKE_STATE_OFF": 0x60,
     "FAKE_WAITER_WW_CTX_OFF": 0x68,
-
     "FAKE_TASK_USAGE_OFF": 0x40,
     "FAKE_TASK_PRIO_OFF": 0x84,
     "FAKE_TASK_NORMAL_PRIO_OFF": 0x8c,
@@ -166,13 +71,11 @@ STATIC_OFFSETS = {
     "FAKE_TASK_PI_WAITERS_OFF": 0x920,
     "FAKE_TASK_PI_TOP_TASK_OFF": 0x930,
     "FAKE_TASK_PI_BLOCKED_ON_OFF": 0x938,
-
     "CFG_PAGE_OFF": 16,
     "CFG_NEEDS_READ_FILL_OFF": 80,
     "CFG_BIN_BUFFER_OFF": 88,
     "CFG_BIN_BUFFER_SIZE_OFF": 96,
     "CFG_CB_MAX_SIZE_OFF": 100,
-
     "MM_OWNER_OFF": 1032,
     "TASK_PID_OFF": 0x618,
     "TASK_TGID_OFF": 0x61c,
@@ -184,7 +87,6 @@ STATIC_OFFSETS = {
     "TASK_TASKS_OFF": 0x550,
     "TASK_THREAD_INFO_FLAGS_OFF": 0x00,
     "TASK_SECCOMP_OFF": 0x8e8,
-
     "CRED_UID_OFF": 8,
     "CRED_SECUREBITS_OFF": 40,
     "CRED_CAPS_OFF": 48,
@@ -192,22 +94,18 @@ STATIC_OFFSETS = {
     "SELINUX_CRED_BLOB_OFF": 0,
     "SELINUX_CRED_OSID_OFF": 0,
     "SELINUX_CRED_SID_OFF": 4,
-
     "SECCOMP_MODE_OFF": 0x00,
     "SECCOMP_FILTER_COUNT_OFF": 0x04,
     "SECCOMP_FILTER_OFF": 0x08,
     "TIF_SECCOMP_BIT": 11,
     "PFA_NO_NEW_PRIVS_BIT": 0,
-
     "STRUCT_PAGE_SIZE": 0x40,
     "STRUCT_PAGE_COMPOUND_HEAD_OFF": 0x08,
     "STRUCT_SLAB_CACHE_OFF": 0x08,
     "STRUCT_PAGE_TYPE_OFF": 0x30,
-
     "PIPE_BUFFER_SIZE": 0x28,
     "PIPE_BUFFER_SLOTS": 32,
     "PIPE_BUF_FLAG_CAN_MERGE": 0x10,
-
     "FOPS_OWNER_OFF": 0x00,
     "FOPS_LLSEEK_OFF": 0x08,
     "FOPS_READ_OFF": 0x10,
@@ -224,31 +122,8 @@ STATIC_OFFSETS = {
 }
 
 
-def sanitize_define_name(name: str) -> str:
-    name = name.upper()
-    name = re.sub(r"[^A-Z0-9_]", "_", name)
-    name = re.sub(r"_+", "_", name)
-    name = name.strip("_")
-
-    if not name:
-        name = "UNKNOWN"
-
-    if name[0].isdigit():
-        name = "_" + name
-
-    return name
-
-
 def run_nm(path: str) -> str:
-    nm_candidates = [
-        "aarch64-linux-gnu-nm",
-        "llvm-nm",
-        "nm",
-    ]
-
-    last_error = None
-
-    for nm in nm_candidates:
+    for nm in ("aarch64-linux-gnu-nm", "llvm-nm", "nm"):
         try:
             result = subprocess.run(
                 [nm, "-n", path],
@@ -259,148 +134,109 @@ def run_nm(path: str) -> str:
             )
             print(f"[*] Using nm: {nm}")
             return result.stdout
-        except FileNotFoundError as e:
-            last_error = e
-        except subprocess.CalledProcessError as e:
-            last_error = e
+        except (FileNotFoundError, subprocess.CalledProcessError):
             continue
 
-    print(f"[-] Failed to run nm: {last_error}")
+    print("[-] Error: no working nm found")
     sys.exit(1)
 
 
-def read_symbols(path: str):
+def read_symbols(path: str) -> dict[str, int]:
     if not os.path.exists(path):
-        print(f"[-] File not found: {path}")
+        print(f"[-] Error: file not found: {path}")
         sys.exit(1)
 
-    symbols = {}
-
-    # System.map style:
-    # ffffffc080000000 T _text
-    #
-    # nm style:
-    # ffffffc080000000 T _text
     if Path(path).name.lower().startswith("system.map"):
         print(f"[*] Reading System.map: {path}")
         data = Path(path).read_text(errors="ignore")
     else:
-        print(f"[*] Reading symbols from ELF: {path}")
+        print(f"[*] Reading ELF symbols: {path}")
         data = run_nm(path)
 
-    for line in data.splitlines():
-        line = line.strip()
-        if not line:
-            continue
+    symbols = {}
 
-        parts = line.split()
+    for line in data.splitlines():
+        parts = line.strip().split()
         if len(parts) < 3:
             continue
 
         addr_s = parts[0]
-        typ = parts[-2]
         name = parts[-1]
 
         if not re.fullmatch(r"[0-9a-fA-F]+", addr_s):
             continue
 
-        try:
-            addr = int(addr_s, 16)
-        except ValueError:
-            continue
+        addr = int(addr_s, 16)
 
         if addr == 0:
             continue
 
-        # Skip ksymtab/crc/kstrtab noise
-        if name.startswith("__ksymtab"):
-            continue
-        if name.startswith("__kstrtab"):
-            continue
-        if name.startswith("__kstrtabns"):
-            continue
-        if name.startswith("__crc"):
+        if name.startswith((
+            "__ksymtab",
+            "__kstrtab",
+            "__kstrtabns",
+            "__crc",
+        )):
             continue
 
-        if name not in symbols:
-            symbols[name] = addr
+        symbols.setdefault(name, addr)
 
     if not symbols:
-        print("[-] No symbols parsed")
+        print("[-] Error: no symbols parsed")
         sys.exit(1)
 
     print(f"[+] Parsed symbols: {len(symbols)}")
     return symbols
 
 
-def detect_text_base(symbols: dict) -> int:
-    for candidate in ("_text", "_stext", "__start_rodata"):
-        if candidate in symbols:
-            base = symbols[candidate]
-            print(f"[*] Kernel text base from {candidate}: 0x{base:x}")
+def detect_text_base(symbols: dict[str, int]) -> int:
+    for name in ("_text", "_stext"):
+        if name in symbols:
+            base = symbols[name]
+            print(f"[*] Kernel text base from {name}: 0x{base:x}")
             return base
 
     print(f"[!] _text/_stext not found, using default: 0x{KIMAGE_TEXT_BASE_DEFAULT:x}")
     return KIMAGE_TEXT_BASE_DEFAULT
 
 
-def normalize_symbol_for_match(name: str) -> str:
-    # configfs_detach_rollback.isra.0 -> configfs_detach_rollback
-    name = re.sub(r"\.(isra|part|constprop|cold|llvm)\.[0-9]+$", "", name)
+def normalize_symbol(name: str) -> str:
+    name = re.sub(r"\.(isra|part|constprop|cold)\.[0-9]+$", "", name)
     name = re.sub(r"\.llvm\.[0-9a-fA-F]+$", "", name)
     return name
 
 
-def find_symbol(symbols: dict, candidates: list[str]):
-    # 1. exact match
+def find_symbol(symbols: dict[str, int], candidates: list[str]):
     for candidate in candidates:
         if candidate in symbols:
             return candidate, symbols[candidate]
 
-    # 2. normalized exact match
     normalized = {}
 
     for name, addr in symbols.items():
-        clean = normalize_symbol_for_match(name)
+        clean = normalize_symbol(name)
         normalized.setdefault(clean, []).append((name, addr))
 
     for candidate in candidates:
         if candidate in normalized:
-            # Prefer the shortest/original-looking name
             matches = sorted(normalized[candidate], key=lambda x: (len(x[0]), x[0]))
             return matches[0]
-
-    # 3. safe suffix fallback
-    for candidate in candidates:
-        safe_matches = []
-
-        for name, addr in symbols.items():
-            clean = normalize_symbol_for_match(name)
-
-            if clean == candidate:
-                safe_matches.append((name, addr))
-            elif clean.endswith("." + candidate):
-                safe_matches.append((name, addr))
-
-        if safe_matches:
-            safe_matches = sorted(safe_matches, key=lambda x: (len(x[0]), x[0]))
-            return safe_matches[0]
 
     return None, None
 
 
-def collect_offsets(symbols: dict, text_base: int):
+def collect_offsets(symbols: dict[str, int], text_base: int):
     found = {}
-    missing_required = []
+    slide_found = {}
+    missing = []
 
     for spec in BASE_SYMBOLS:
-        define = sanitize_define_name(spec["define"])
         symbol, addr = find_symbol(symbols, spec["candidates"])
+        define = spec["define"]
 
         if symbol is None:
-            if spec.get("required", False):
-                missing_required.append(define)
-            print(f"[!] Missing symbol for {define}: {spec['candidates']}")
+            if spec["required"]:
+                missing.append(define)
             continue
 
         found[define] = {
@@ -408,16 +244,13 @@ def collect_offsets(symbols: dict, text_base: int):
             "offset": addr - text_base,
         }
 
-    slide_found = {}
-
     for spec in SLIDE_SYMBOLS:
-        define = sanitize_define_name(spec["define"])
         symbol, addr = find_symbol(symbols, spec["candidates"])
+        define = spec["define"]
 
         if symbol is None:
-            if spec.get("required", False):
-                missing_required.append(define)
-            print(f"[!] Missing slide symbol for {define}: {spec['candidates']}")
+            if spec["required"]:
+                missing.append(define)
             continue
 
         slide_found[define] = {
@@ -425,13 +258,14 @@ def collect_offsets(symbols: dict, text_base: int):
             "offset": addr - text_base,
         }
 
-    if missing_required:
-        print("\n[-] Missing required symbols:")
-        for name in missing_required:
-            print(f"    - {name}")
+    if missing:
+        print("[-] Missing required symbols:")
+        for item in missing:
+            print(f"    - {item}")
+
         print("")
         print("[*] Similar available symbols:")
-        keywords = [
+        keywords = (
             "ashmem",
             "configfs",
             "splice",
@@ -444,9 +278,9 @@ def collect_offsets(symbols: dict, text_base: int):
             "anon_pipe",
             "nfulnl",
             "loggers",
-            "boot_id",
             "bootid",
-        ]
+            "boot_id",
+        )
 
         for name in sorted(symbols):
             low = name.lower()
@@ -467,8 +301,8 @@ def fmt_u64(value: int) -> str:
 def generate_header(
     found: dict,
     slide_found: dict,
-    build_variant: str,
-    build_fingerprint: str,
+    variant: str,
+    fingerprint: str,
     text_base: int,
 ) -> str:
     out = []
@@ -476,8 +310,8 @@ def generate_header(
     out.append("#ifndef OFFSET_H")
     out.append("#define OFFSET_H")
     out.append("")
-    out.append(f'#define BUILD_VARIANT_LABEL "{build_variant}"')
-    out.append(f'#define BUILD_FINGERPRINT "{build_fingerprint}"')
+    out.append(f'#define BUILD_VARIANT_LABEL "{variant}"')
+    out.append(f'#define BUILD_FINGERPRINT "{fingerprint}"')
     out.append("")
     out.append(f"#define KIMAGE_TEXT_BASE 0x{text_base:x}ULL")
     out.append("#define P0_PAGE_OFFSET 0xffffff8000000000ULL")
@@ -491,26 +325,23 @@ def generate_header(
     out.append("")
 
     for spec in BASE_SYMBOLS:
-        define = sanitize_define_name(spec["define"])
-        if define not in found:
-            continue
-        out.append(f"#define {define}_OFF {fmt_u64(found[define]['offset'])}")
+        define = spec["define"]
+        if define in found:
+            out.append(f"#define {define}_OFF {fmt_u64(found[define]['offset'])}")
 
     out.append("")
 
     for spec in BASE_SYMBOLS:
-        define = sanitize_define_name(spec["define"])
-        if define not in found:
-            continue
-        out.append(f"#define {define} (KIMAGE_TEXT_BASE + {define}_OFF)")
+        define = spec["define"]
+        if define in found:
+            out.append(f"#define {define} (KIMAGE_TEXT_BASE + {define}_OFF)")
 
     out.append("")
 
     for spec in SLIDE_SYMBOLS:
-        define = sanitize_define_name(spec["define"])
-        if define not in slide_found:
-            continue
-        out.append(f"#define {define}_OFF {fmt_u64(slide_found[define]['offset'])}")
+        define = spec["define"]
+        if define in slide_found:
+            out.append(f"#define {define}_OFF {fmt_u64(slide_found[define]['offset'])}")
 
     if "INIT_TASK" in found:
         out.append("#define SLIDE_INIT_TASK_OFF INIT_TASK_OFF")
@@ -521,11 +352,10 @@ def generate_header(
     out.append("")
 
     for spec in SLIDE_SYMBOLS:
-        define = sanitize_define_name(spec["define"])
-        if define not in slide_found:
-            continue
-        out.append(f"#define {define}_IMAGE \\")
-        out.append(f"  (KIMAGE_TEXT_BASE + {define}_OFF)")
+        define = spec["define"]
+        if define in slide_found:
+            out.append(f"#define {define}_IMAGE \\")
+            out.append(f"  (KIMAGE_TEXT_BASE + {define}_OFF)")
 
     if "INIT_TASK" in found:
         out.append("#define SLIDE_INIT_TASK_IMAGE (KIMAGE_TEXT_BASE + SLIDE_INIT_TASK_OFF)")
@@ -535,14 +365,12 @@ def generate_header(
         out.append("  (KIMAGE_TEXT_BASE + SLIDE_ROOT_TASK_GROUP_OFF)")
 
     out.append("")
+
     for name, value in STATIC_OFFSETS.items():
-        if isinstance(value, int):
-            if value < 16:
-                out.append(f"#define {name} {value}")
-            else:
-                out.append(f"#define {name} 0x{value:x}")
-        else:
+        if value < 16:
             out.append(f"#define {name} {value}")
+        else:
+            out.append(f"#define {name} 0x{value:x}")
 
     out.append("")
     out.append("#endif")
@@ -551,18 +379,12 @@ def generate_header(
     return "\n".join(out)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description="Extract only required kernel offsets from vmlinux/System.map"
-    )
-
+def main() -> int:
+    parser = argparse.ArgumentParser()
     parser.add_argument("symbols_file", help="vmlinux ELF or System.map")
     parser.add_argument("output_file", nargs="?", default="target.h")
     parser.add_argument("--variant", default="unknown")
-    parser.add_argument(
-        "--fingerprint",
-        default="unknown",
-    )
+    parser.add_argument("--fingerprint", default="unknown")
 
     args = parser.parse_args()
 
@@ -571,30 +393,29 @@ def main():
 
     found, slide_found = collect_offsets(symbols, text_base)
 
-    print("")
-    print("[+] Matched base symbols:")
+    print("[+] Found base symbols:")
     for define, item in found.items():
-        print(f"    {define:30s} <- {item['symbol']} @ {fmt_u64(item['offset'])}")
+        print(f"    {define:30s} <- {item['symbol']} {fmt_u64(item['offset'])}")
 
-    print("")
-    print("[+] Matched slide symbols:")
+    print("[+] Found slide symbols:")
     for define, item in slide_found.items():
-        print(f"    {define:30s} <- {item['symbol']} @ {fmt_u64(item['offset'])}")
+        print(f"    {define:30s} <- {item['symbol']} {fmt_u64(item['offset'])}")
 
     header = generate_header(
         found=found,
         slide_found=slide_found,
-        build_variant=args.variant,
-        build_fingerprint=args.fingerprint,
+        variant=args.variant,
+        fingerprint=args.fingerprint,
         text_base=text_base,
     )
 
-    Path(args.output_file).parent.mkdir(parents=True, exist_ok=True)
-    Path(args.output_file).write_text(header)
+    output_path = Path(args.output_file)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.write_text(header)
 
-    print("")
-    print(f"[+] Saved: {args.output_file}")
+    print(f"[+] Saved: {output_path}")
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    sys.exit(main())
