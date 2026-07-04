@@ -131,22 +131,6 @@ jobs:
           API=${{ github.event.inputs.api_level }} \
           info
 
-    - name: Archive kernel build
-      if: always()
-      run: |
-        tar -I 'zstd -19 -T0' \
-          -cf kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst \
-          -C kernel_src out extracted_offsets.h
-
-        ls -lh kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst
-
-    - name: Upload compressed kernel build artifact
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}
-        path: kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst
-        retention-days: 30
 
     - name: Upload offsets artifact
       if: always()
