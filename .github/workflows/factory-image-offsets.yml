@@ -1,0 +1,329 @@
+name: Factory Image Offsets Artifact
+
+on:
+  workflow_dispatch:
+    inputs:
+      factory_image_url:
+        description: "Google factory image URL"
+        required: true
+        default: "https://dl.google.com/dl/android/aosp/bluejay-bp2a.250705.008.a1-factory-c394526e.zip"
+      api_level:
+        description: "Android API level"
+        required: true
+        default: "35"
+
+jobs:
+  factory-image-offsets:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+          sudo apt-get install -y \
+            curl \
+            wget \
+            unzip \
+            file \
+            binutils \
+            binutils-aarch64-linux-gnu \
+            python3 \
+            zstd \
+            tar \
+            grep \
+            coreutils
+
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+
+          mkdir -p work
+          mkdir -p artifacts
+          mkdir -p diagnostics
+
+      - name: Parse factory image URL
+        id: parse
+        run: |
+          set -euxo pipefail
+
+          URL="${{ github.event.inputs.factory_image_url }}"
+          FILE_NAME="$(basename "$URL")"
+
+          echo "Factory image file: $FILE_NAME"
+
+          DEVICE="$(echo "$FILE_NAME" | sed -E 's/^([^-]+)-.*$/\1/')"
+          VERSION="$(echo "$FILE_NAME" | sed -E 's/^[^-]+-([^-]+)-factory.*$/\1/' | tr '[:lower:]' '[:upper:]')"
+
+          if [ -z "$DEVICE" ] || [ -z "$VERSION" ]; then
+            echo "::error::Failed to parse device/version from URL"
+            exit 1
+          fi
+
+          ARTIFACT_DIR="${DEVICE}-${VERSION}"
+
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+
+          mkdir -p "artifacts/$ARTIFACT_DIR"
+
+          cat > "artifacts/$ARTIFACT_DIR/metadata.txt" <<EOF
+          FACTORY_IMAGE_URL=$URL
+          FACTORY_IMAGE_FILE=$FILE_NAME
+          DEVICE=$DEVICE
+          VERSION=$VERSION
+          API_LEVEL=${{ github.event.inputs.api_level }}
+          EOF
+
+      - name: Download factory image
+        run: |
+          set -euxo pipefail
+
+          URL="${{ github.event.inputs.factory_image_url }}"
+          FILE_NAME="$(basename "$URL")"
+
+          wget -O "work/$FILE_NAME" "$URL"
+
+          ls -lh "work/$FILE_NAME"
+          file "work/$FILE_NAME"
+
+      - name: Extract factory image
+        run: |
+          set -euxo pipefail
+
+          cd work
+
+          unzip -q "$(basename "${{ github.event.inputs.factory_image_url }}")" -d factory
+
+          echo "===== Factory files ====="
+          find factory -maxdepth 3 -type f | sort | tee ../diagnostics/factory-files.txt
+
+          IMAGE_ZIP="$(find factory -type f -name 'image-*.zip' | head -n 1)"
+
+          if [ -z "$IMAGE_ZIP" ]; then
+            echo "::error::image-*.zip not found inside factory image"
+            exit 1
+          fi
+
+          echo "IMAGE_ZIP=$IMAGE_ZIP" | tee ../diagnostics/image-zip.txt
+
+          mkdir -p images
+          unzip -q "$IMAGE_ZIP" -d images
+
+          echo "===== Image files ====="
+          find images -maxdepth 2 -type f | sort | tee ../diagnostics/image-files.txt
+
+      - name: Extract fingerprint
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          DEVICE="${{ steps.parse.outputs.device }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+
+          FINGERPRINT=""
+
+          echo "===== Searching fingerprint in text files ====="
+          grep -aR "ro.build.fingerprint=" work/factory work/images 2>/dev/null | head -20 | tee diagnostics/fingerprint-grep-text.txt || true
+
+          FINGERPRINT="$(grep -aR "ro.build.fingerprint=" work/factory work/images 2>/dev/null \
+            | head -n 1 \
+            | sed -E 's/.*ro\.build\.fingerprint=//')"
+
+          if [ -z "$FINGERPRINT" ]; then
+            echo "===== Searching fingerprint via strings in img files ====="
+
+            for img in work/images/*.img; do
+              echo "Checking $img"
+              strings "$img" | grep -m 1 "google/${DEVICE}/${DEVICE}" || true
+            done | tee diagnostics/fingerprint-strings.txt
+
+            FINGERPRINT="$(cat diagnostics/fingerprint-strings.txt \
+              | grep -m 1 "google/${DEVICE}/${DEVICE}" \
+              | sed 's/^[[:space:]]*//')"
+          fi
+
+          if [ -z "$FINGERPRINT" ]; then
+            FINGERPRINT="google/${DEVICE}/${DEVICE}:unknown/${VERSION}/unknown:user/release-keys"
+            echo "::warning::Fingerprint not found, using fallback: $FINGERPRINT"
+          fi
+
+          echo "$FINGERPRINT" > "artifacts/$ARTIFACT_DIR/fingerprint.txt"
+
+          cat >> "artifacts/$ARTIFACT_DIR/metadata.txt" <<EOF
+          BUILD_FINGERPRINT=$FINGERPRINT
+          EOF
+
+          echo "Fingerprint: $FINGERPRINT"
+
+      - name: Extract boot kernel candidates
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          mkdir -p "artifacts/$ARTIFACT_DIR/kernel_candidates"
+
+          echo "===== Boot-related images ====="
+          find work/images -type f \( \
+            -name 'boot.img' \
+            -o -name 'init_boot.img' \
+            -o -name 'vendor_boot.img' \
+            -o -name 'vendor_kernel_boot.img' \
+          \) | sort | tee diagnostics/boot-images.txt
+
+          while read -r img; do
+            [ -z "$img" ] && continue
+
+            base="$(basename "$img")"
+
+            cp "$img" "artifacts/$ARTIFACT_DIR/kernel_candidates/$base"
+
+            echo "===== $base =====" | tee -a diagnostics/boot-image-info.txt
+            file "$img" | tee -a diagnostics/boot-image-info.txt
+            ls -lh "$img" | tee -a diagnostics/boot-image-info.txt
+            strings "$img" | grep -i -m 5 "Linux version" | tee -a diagnostics/boot-image-info.txt || true
+          done < diagnostics/boot-images.txt
+
+      - name: Try to locate ELF vmlinux
+        id: vmlinux
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          VMLINUX=""
+
+          echo "===== Looking for ELF files ====="
+          find work artifacts -type f | while read -r f; do
+            if file "$f" | grep -q "ELF"; then
+              echo "$f"
+            fi
+          done | tee diagnostics/elf-files.txt
+
+          VMLINUX="$(cat diagnostics/elf-files.txt | grep -m 1 'vmlinux' || true)"
+
+          if [ -n "$VMLINUX" ]; then
+            echo "Found vmlinux: $VMLINUX"
+            cp "$VMLINUX" "artifacts/$ARTIFACT_DIR/vmlinux"
+            echo "vmlinux_path=artifacts/$ARTIFACT_DIR/vmlinux" >> "$GITHUB_OUTPUT"
+            echo "has_vmlinux=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No ELF vmlinux found in factory image"
+            echo "vmlinux_path=" >> "$GITHUB_OUTPUT"
+            echo "has_vmlinux=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Create diagnostics
+        if: always()
+        run: |
+          set +e
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          mkdir -p "artifacts/$ARTIFACT_DIR/diagnostics"
+
+          cp -r diagnostics/* "artifacts/$ARTIFACT_DIR/diagnostics/" 2>/dev/null || true
+
+          echo "===== Artifact tree ====="
+          find "artifacts/$ARTIFACT_DIR" -maxdepth 4 -type f | sort
+
+      - name: Extract offsets from vmlinux if available
+        if: steps.vmlinux.outputs.has_vmlinux == 'true'
+        continue-on-error: true
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          VMLINUX="${{ steps.vmlinux.outputs.vmlinux_path }}"
+
+          python3 scripts/extract_kernel_offsets.py \
+            "$VMLINUX" \
+            "artifacts/$ARTIFACT_DIR/extracted_offsets.h"
+
+          cp "artifacts/$ARTIFACT_DIR/extracted_offsets.h" \
+             "artifacts/$ARTIFACT_DIR/target.h"
+
+      - name: Create fallback target files if symbols are unavailable
+        if: always()
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          DEVICE="${{ steps.parse.outputs.device }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+          FINGERPRINT="$(cat artifacts/$ARTIFACT_DIR/fingerprint.txt)"
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/extracted_offsets.h" ]; then
+            cat > "artifacts/$ARTIFACT_DIR/extracted_offsets.h" <<EOF
+          #ifndef OFFSET_H
+          #define OFFSET_H
+
+          #define BUILD_VARIANT_LABEL "$DEVICE-$VERSION"
+          #define BUILD_FINGERPRINT "$FINGERPRINT"
+
+          /*
+           * Offsets were not extracted.
+           *
+           * Reason:
+           * Google factory images normally contain boot.img / kernel Image,
+           * but not an unstripped ELF vmlinux with symbol table.
+           *
+           * To generate real offsets, build matching kernel source and run:
+           * python3 scripts/extract_kernel_offsets.py path/to/vmlinux extracted_offsets.h
+           */
+
+          #endif
+          EOF
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/target.h" ]; then
+            cp "artifacts/$ARTIFACT_DIR/extracted_offsets.h" \
+               "artifacts/$ARTIFACT_DIR/target.h"
+          fi
+
+      - name: Final artifact layout
+        if: always()
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          echo "===== Final artifact files ====="
+          find "artifacts/$ARTIFACT_DIR" -type f | sort
+
+          echo "===== metadata.txt ====="
+          cat "artifacts/$ARTIFACT_DIR/metadata.txt"
+
+          echo "===== fingerprint.txt ====="
+          cat "artifacts/$ARTIFACT_DIR/fingerprint.txt"
+
+          echo "===== extracted_offsets.h ====="
+          cat "artifacts/$ARTIFACT_DIR/extracted_offsets.h"
+
+      - name: Compress artifact folder
+        if: always()
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          tar -I 'zstd -19 -T0' \
+            -cf "${ARTIFACT_DIR}.tar.zst" \
+            -C artifacts "$ARTIFACT_DIR"
+
+          ls -lh "${ARTIFACT_DIR}.tar.zst"
+
+      - name: Upload artifact folder
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.parse.outputs.artifact_dir }}
+          path: ${{ steps.parse.outputs.artifact_dir }}.tar.zst
+          retention-days: 30
