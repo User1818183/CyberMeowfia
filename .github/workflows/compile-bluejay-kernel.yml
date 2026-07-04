@@ -1,0 +1,203 @@
+name: Compile Bluejay Kernel & Extract Offsets
+
+on:
+  workflow_dispatch:
+    inputs:
+      kernel_branch:
+        description: 'Kernel branch to compile'
+        required: true
+        default: 'android-gs-bluejay-6.1-android16-dp'
+      output_artifact:
+        description: 'Upload vmlinux as artifact'
+        required: false
+        default: 'true'
+
+jobs:
+  compile-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    
+    steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+
+    - name: Install dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y \
+          build-essential \
+          python3 \
+          git \
+          libssl-dev \
+          libelf-dev \
+          bison \
+          flex \
+          bc \
+          gcc-aarch64-linux-gnu \
+          g++-aarch64-linux-gnu \
+          binutils-aarch64-linux-gnu
+
+    - name: Clone Android kernel
+      run: |
+        git clone https://android.googlesource.com/kernel/common \
+          -b ${{ github.event.inputs.kernel_branch }} \
+          --depth 1 kernel_src
+        cd kernel_src
+        git log --oneline -5
+
+    - name: Setup kernel config
+      run: |
+        cd kernel_src
+        mkdir -p out
+        
+        # Use GKI defconfig
+        make ARCH=arm64 O=out gki_defconfig
+        
+        # Enable debug symbols
+        ./scripts/config --file out/.config \
+          --enable DEBUG_INFO \
+          --enable DEBUG_INFO_DWARF4 \
+          --enable KALLSYMS \
+          --enable KALLSYMS_ALL
+        
+        # Validate config
+        make ARCH=arm64 O=out oldconfig
+
+    - name: Compile kernel
+      run: |
+        cd kernel_src
+        make ARCH=arm64 \
+          O=out \
+          CROSS_COMPILE=aarch64-linux-gnu- \
+          CC=aarch64-linux-gnu-gcc \
+          AR=aarch64-linux-gnu-ar \
+          LD=aarch64-linux-gnu-ld.bfd \
+          OBJCOPY=aarch64-linux-gnu-objcopy \
+          OBJDUMP=aarch64-linux-gnu-objdump \
+          STRIP=aarch64-linux-gnu-strip \
+          -j$(nproc)
+
+    - name: Verify vmlinux
+      run: |
+        cd kernel_src
+        file out/vmlinux
+        ls -lh out/vmlinux
+        nm -S out/vmlinux | head -20
+
+    - name: Extract offsets
+      run: |
+        cd kernel_src
+        python3 << 'EXTRACT_EOF'
+import subprocess
+import re
+
+KIMAGE_TEXT_BASE = 0xffffffc080000000
+
+# Get all symbols with their addresses
+result = subprocess.run(['nm', '-S', 'out/vmlinux'], capture_output=True, text=True)
+
+symbols_dict = {}
+for line in result.stdout.split('\n'):
+    if not line.strip():
+        continue
+    
+    parts = line.split()
+    if len(parts) < 3:
+        continue
+    
+    try:
+        addr_str = parts[0]
+        symbol = parts[-1]
+        
+        addr = int(addr_str, 16)
+        offset = addr - KIMAGE_TEXT_BASE
+        
+        symbols_dict[symbol] = offset
+    except:
+        pass
+
+# Print offsets for CVE-2026-43499 exploit
+print("[*] Extracted kernel offsets for Bluejay BP2A.250705.008")
+print()
+
+# Key symbols needed for the exploit
+NEEDED = [
+    'init_task', 'selinux_enforcing', 'security_hook_heads',
+    'kmalloc_caches', 'root_task_group', 'selinux_blob_sizes',
+    'anon_pipe_buf_ops', 'nfulnl_logger', 'configfs_read_iter',
+    'configfs_bin_write_iter', 'copy_splice_read', 'noop_llseek'
+]
+
+found_offsets = {}
+
+for symbol, offset in sorted(symbols_dict.items()):
+    for needed in NEEDED:
+        if needed.lower() in symbol.lower():
+            found_offsets[symbol] = offset
+            print(f"#define {symbol.upper():45s}_OFF 0x{offset:010x}ULL")
+            break
+
+# Save to file
+with open('extracted_offsets.txt', 'w') as f:
+    f.write("# Bluejay BP2A.250705.008 Kernel Offsets\n")
+    f.write("# Kernel branch: android-gs-bluejay-6.1-android16-dp\n\n")
+    
+    f.write("#ifndef OFFSET_H\n")
+    f.write("#define OFFSET_H\n\n")
+    
+    f.write('#define BUILD_VARIANT_LABEL "bluejay"\n')
+    f.write('#define BUILD_FINGERPRINT "google/bluejay/bluejay:14/BP2A.250705.008/...:user/release-keys"\n\n')
+    
+    f.write("#define KIMAGE_TEXT_BASE 0xffffffc080000000ULL\n")
+    f.write("#define P0_PAGE_OFFSET 0xffffff8000000000ULL\n")
+    f.write("#define P0_PHYS_OFFSET 0x80000000ULL\n")
+    f.write("#define P0_KERNEL_PHYS_LOAD 0x80000000ULL\n")
+    f.write("#define KERNELSNITCH_IDENTITY_START 0xffffff8000000000ULL\n")
+    f.write("#define KERNELSNITCH_IDENTITY_END 0xffffff9000000000ULL\n")
+    f.write("#define DIRECT_MAP_BASE 0xffffff8000000000ULL\n")
+    f.write("#define DIRECT_MAP_END 0xffffff9000000000ULL\n")
+    f.write("#define VMEMMAP_START 0xfffffffe00000000ULL\n\n")
+    
+    for symbol, offset in sorted(found_offsets.items(), key=lambda x: x[1]):
+        f.write(f"#define {symbol.upper():45s}_OFF 0x{offset:010x}ULL\n")
+    
+    f.write("\n#endif\n")
+
+print("\n[+] Offsets saved to extracted_offsets.txt")
+
+EXTRACT_EOF
+
+    - name: Upload offsets artifact
+      uses: actions/upload-artifact@v3
+      with:
+        name: kernel-offsets
+        path: kernel_src/extracted_offsets.txt
+        retention-days: 30
+
+    - name: Upload vmlinux artifact
+      if: github.event.inputs.output_artifact == 'true'
+      uses: actions/upload-artifact@v3
+      with:
+        name: vmlinux-bluejay
+        path: kernel_src/out/vmlinux
+        retention-days: 30
+
+    - name: Create target.h
+      run: |
+        mkdir -p IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008
+        cp kernel_src/extracted_offsets.txt IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008/target.h
+
+    - name: Test exploit compilation
+      run: |
+        cd IonStack/CVE-2026-43499/exploit
+        make PROJECT=bluejay-BP2A.250705.008 API=34 info
+
+    - name: Upload build summary
+      if: always()
+      uses: actions/upload-artifact@v3
+      with:
+        name: build-summary
+        path: |
+          kernel_src/out/.config
+          kernel_src/extracted_offsets.txt
+        retention-days: 30
