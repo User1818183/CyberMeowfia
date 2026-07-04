@@ -6,6 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+missing = []
 KIMAGE_TEXT_BASE_DEFAULT = 0xffffffc080000000
 
 SYMBOL_ALIASES = {
@@ -207,10 +208,10 @@ def read_symbols(path: str) -> dict[str, int]:
             continue
 
         if name.startswith((
-            "__ksymtab",
-            "__kstrtab",
-            "__kstrtabns",
-            "__crc",
+                "__ksymtab",
+                "__kstrtab",
+                "__kstrtabns",
+                "__crc",
         )):
             continue
 
@@ -263,7 +264,7 @@ def find_symbol(symbols: dict[str, int], candidates: list[str]):
 def collect_offsets(symbols: dict[str, int], text_base: int):
     found = {}
     slide_found = {}
-    missing = []
+
 
     for spec in BASE_SYMBOLS:
         candidates = get_candidates(spec["symbol"])
@@ -325,8 +326,6 @@ def collect_offsets(symbols: dict[str, int], text_base: int):
             if any(k in low for k in keywords):
                 print(f"    {name}")
 
-        
-
     return found, slide_found
 
 
@@ -337,11 +336,11 @@ def fmt_u64(value: int) -> str:
 
 
 def generate_header(
-    found: dict,
-    slide_found: dict,
-    variant: str,
-    fingerprint: str,
-    text_base: int,
+        found: dict,
+        slide_found: dict,
+        variant: str,
+        fingerprint: str,
+        text_base: int,
 ) -> str:
     out = []
 
@@ -414,12 +413,12 @@ def generate_header(
         out.append("")
         out.append("/*")
         out.append(" * Missing symbols:")
-    
+
         for define, candidates in missing:
             out.append(f" * {define}: {', '.join(candidates)}")
-    
+
         out.append(" */")
-    
+
     out.append("")
     out.append("#endif")
     out.append("")
