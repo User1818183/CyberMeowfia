@@ -325,7 +325,7 @@ def collect_offsets(symbols: dict[str, int], text_base: int):
             if any(k in low for k in keywords):
                 print(f"    {name}")
 
-        sys.exit(1)
+        
 
     return found, slide_found
 
@@ -410,6 +410,16 @@ def generate_header(
         else:
             out.append(f"#define {name} 0x{value:x}")
 
+    if missing:
+        out.append("")
+        out.append("/*")
+        out.append(" * Missing symbols:")
+    
+        for define, candidates in missing:
+            out.append(f" * {define}: {', '.join(candidates)}")
+    
+        out.append(" */")
+    
     out.append("")
     out.append("#endif")
     out.append("")
