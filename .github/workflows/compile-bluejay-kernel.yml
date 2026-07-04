@@ -43,7 +43,8 @@ jobs:
           bc \
           gcc-aarch64-linux-gnu \
           g++-aarch64-linux-gnu \
-          binutils-aarch64-linux-gnu
+          binutils-aarch64-linux-gnu \
+          sudo apt-get install -y pahole
 
     - name: Clone Android kernel
       run: |
