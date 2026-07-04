@@ -120,28 +120,28 @@ jobs:
              info
 
     - name: Upload offsets artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: kernel-offsets-${{ github.event.inputs.device_name }}
         path: kernel_src/extracted_offsets.h
         retention-days: 30
 
     - name: Upload vmlinux artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: vmlinux-${{ github.event.inputs.device_name }}
         path: kernel_src/out/vmlinux
         retention-days: 30
 
     - name: Upload target.h artifact
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: target-h-${{ github.event.inputs.device_name }}
         path: IonStack/CVE-2026-43499/exploit/src/targets/${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}/target.h
         retention-days: 30
 
     - name: Upload kernel config
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: kernel-config-${{ github.event.inputs.device_name }}
         path: kernel_src/out/.config
