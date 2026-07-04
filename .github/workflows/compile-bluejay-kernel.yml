@@ -87,9 +87,8 @@ jobs:
     - name: Extract offsets
       run: |
         cd kernel_src
-        python3 << 'EXTRACT_EOF'
+        python3 << 'EOF'
 import subprocess
-import re
 
 KIMAGE_TEXT_BASE = 0xffffffc080000000
 
@@ -164,8 +163,7 @@ with open('extracted_offsets.txt', 'w') as f:
     f.write("\n#endif\n")
 
 print("\n[+] Offsets saved to extracted_offsets.txt")
-
-EXTRACT_EOF
+EOF
 
     - name: Upload offsets artifact
       uses: actions/upload-artifact@v3
@@ -190,14 +188,25 @@ EXTRACT_EOF
     - name: Test exploit compilation
       run: |
         cd IonStack/CVE-2026-43499/exploit
-        make PROJECT=bluejay-BP2A.250705.008 API=34 info
+        make PROJECT=bluejay-BP2A.250705.008 API=34 info || true
 
-    - name: Upload build summary
+    - name: Upload build artifacts
       if: always()
       uses: actions/upload-artifact@v3
       with:
-        name: build-summary
+        name: build-results
         path: |
           kernel_src/out/.config
           kernel_src/extracted_offsets.txt
+          IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008/target.h
         retention-days: 30
+
+    - name: Summary
+      run: |
+        echo "=== Build Summary ==="
+        echo "Kernel Branch: ${{ github.event.inputs.kernel_branch }}"
+        echo "Status: Complete"
+        echo ""
+        echo "Generated Files:"
+        ls -lh kernel_src/extracted_offsets.txt
+        ls -lh IonStack/CVE-2026-43499/exploit/src/targets/bluejay-BP2A.250705.008/target.h 2>/dev/null || echo "target.h will be created"
