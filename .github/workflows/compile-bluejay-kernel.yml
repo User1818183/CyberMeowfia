@@ -137,8 +137,8 @@ jobs:
       run: |
         tar -I 'zstd -19 -T0' \
           -cf kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst \
-          -C kernel_src out extracted_offsets.h
-
+          -C kernel_src/out vmlinux System.map
+    
         ls -lh kernel-build-${{ github.event.inputs.device_name }}-${{ github.event.inputs.build_version }}.tar.zst
 
     - name: Upload compressed kernel build artifact
