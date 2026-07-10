@@ -1,0 +1,603 @@
+name: Factory Image Kernel Analysis
+
+on:
+  workflow_dispatch:
+    inputs:
+      factory_image_url:
+        description: "Google factory image URL"
+        required: true
+        default: "https://dl.google.com/dl/android/aosp/bluejay-bp2a.250705.008.a1-factory-c394526e.zip"
+
+jobs:
+  analyze-factory-kernel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+
+          sudo apt-get update
+
+          sudo apt-get install -y \
+            binutils \
+            binutils-aarch64-linux-gnu \
+            build-essential \
+            curl \
+            dwarves \
+            file \
+            git \
+            grep \
+            liblz4-tool \
+            lz4 \
+            python3 \
+            python3-pip \
+            tar \
+            unzip \
+            wget \
+            xz-utils \
+            zstd
+
+          pahole --version
+          aarch64-linux-gnu-nm --version
+
+      - name: Prepare workspace
+        run: |
+          set -euxo pipefail
+
+          mkdir -p work/factory
+          mkdir -p work/images
+          mkdir -p work/boot-unpacked
+          mkdir -p diagnostics
+          mkdir -p artifacts
+
+      - name: Parse factory image URL
+        id: parse
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          URL="${{ github.event.inputs.factory_image_url }}"
+          FILE_NAME="$(basename "$URL")"
+
+          DEVICE="$(echo "$FILE_NAME" | sed -E 's/^([^-]+)-.*$/\1/')"
+
+          VERSION="$(echo "$FILE_NAME" \
+            | sed -E 's/^[^-]+-(.+)-factory-[^.]+\.zip$/\1/' \
+            | tr '[:lower:]' '[:upper:]')"
+
+          if [ -z "$DEVICE" ] || [ -z "$VERSION" ]; then
+            echo "::error::Unable to extract device/version from URL"
+            exit 1
+          fi
+
+          ARTIFACT_DIR="${DEVICE}-${VERSION}"
+
+          echo "device=$DEVICE" >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          echo "artifact_dir=$ARTIFACT_DIR" >> "$GITHUB_OUTPUT"
+          echo "filename=$FILE_NAME" >> "$GITHUB_OUTPUT"
+
+          mkdir -p "artifacts/$ARTIFACT_DIR"
+
+          cat > "artifacts/$ARTIFACT_DIR/metadata.txt" <<EOF
+          FACTORY_IMAGE_URL=$URL
+          FACTORY_IMAGE_FILE=$FILE_NAME
+          DEVICE=$DEVICE
+          VERSION=$VERSION
+          EOF
+
+          echo "Device: $DEVICE"
+          echo "Version: $VERSION"
+          echo "Artifact directory: $ARTIFACT_DIR"
+
+      - name: Download factory image
+        run: |
+          set -euxo pipefail
+
+          wget \
+            --progress=dot:giga \
+            -O "work/${{ steps.parse.outputs.filename }}" \
+            "${{ github.event.inputs.factory_image_url }}"
+
+          file "work/${{ steps.parse.outputs.filename }}"
+          ls -lh "work/${{ steps.parse.outputs.filename }}"
+
+          sha256sum "work/${{ steps.parse.outputs.filename }}" \
+            | tee diagnostics/factory-image.sha256
+
+      - name: Extract factory image
+        run: |
+          set -euxo pipefail
+
+          unzip -q \
+            "work/${{ steps.parse.outputs.filename }}" \
+            -d work/factory
+
+          find work/factory -maxdepth 4 -type f \
+            | sort \
+            | tee diagnostics/factory-files.txt
+
+          IMAGE_ZIP="$(find work/factory \
+            -type f \
+            -name 'image-*.zip' \
+            | head -n 1)"
+
+          if [ -z "$IMAGE_ZIP" ]; then
+            echo "::error::image-*.zip not found"
+            exit 1
+          fi
+
+          echo "$IMAGE_ZIP" | tee diagnostics/image-zip-path.txt
+
+          unzip -q "$IMAGE_ZIP" -d work/images
+
+          find work/images -maxdepth 2 -type f \
+            | sort \
+            | tee diagnostics/image-files.txt
+
+      - name: Locate boot image
+        id: boot
+        run: |
+          set -euxo pipefail
+
+          BOOT_IMG="$(find work/images -type f -name 'boot.img' | head -n 1)"
+
+          if [ -z "$BOOT_IMG" ]; then
+            echo "::error::boot.img not found"
+            exit 1
+          fi
+
+          echo "boot_img=$BOOT_IMG" >> "$GITHUB_OUTPUT"
+
+          file "$BOOT_IMG" | tee diagnostics/boot-file.txt
+          ls -lh "$BOOT_IMG" | tee diagnostics/boot-size.txt
+          sha256sum "$BOOT_IMG" | tee diagnostics/boot.sha256
+
+          cp "$BOOT_IMG" \
+            "artifacts/${{ steps.parse.outputs.artifact_dir }}/boot.img"
+
+      - name: Install Android boot image unpacker
+        run: |
+          set -euxo pipefail
+
+          git clone \
+            --depth 1 \
+            https://android.googlesource.com/platform/system/tools/mkbootimg \
+            work/mkbootimg
+
+          test -f work/mkbootimg/unpack_bootimg.py
+
+      - name: Unpack boot image
+        run: |
+          set -euxo pipefail
+
+          python3 work/mkbootimg/unpack_bootimg.py \
+            --boot_img "${{ steps.boot.outputs.boot_img }}" \
+            --out work/boot-unpacked \
+            | tee diagnostics/unpack-bootimg.txt
+
+          find work/boot-unpacked -maxdepth 2 -type f \
+            -exec file {} \; \
+            | tee diagnostics/boot-unpacked-files.txt
+
+          find work/boot-unpacked -maxdepth 2 -type f \
+            -exec ls -lh {} \; \
+            | tee diagnostics/boot-unpacked-sizes.txt
+
+      - name: Locate extracted kernel payload
+        id: kernel
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          KERNEL_PAYLOAD=""
+
+          for candidate in \
+            work/boot-unpacked/kernel \
+            work/boot-unpacked/kernel.gz \
+            work/boot-unpacked/Image \
+            work/boot-unpacked/Image.gz \
+            work/boot-unpacked/Image.lz4; do
+            if [ -f "$candidate" ]; then
+              KERNEL_PAYLOAD="$candidate"
+              break
+            fi
+          done
+
+          if [ -z "$KERNEL_PAYLOAD" ]; then
+            KERNEL_PAYLOAD="$(find work/boot-unpacked \
+              -maxdepth 2 \
+              -type f \
+              -name '*kernel*' \
+              | head -n 1)"
+          fi
+
+          if [ -z "$KERNEL_PAYLOAD" ]; then
+            echo "::error::Kernel payload not found in boot.img"
+            exit 1
+          fi
+
+          echo "kernel_payload=$KERNEL_PAYLOAD" >> "$GITHUB_OUTPUT"
+
+          file "$KERNEL_PAYLOAD" | tee diagnostics/kernel-payload-file.txt
+          ls -lh "$KERNEL_PAYLOAD" | tee diagnostics/kernel-payload-size.txt
+          sha256sum "$KERNEL_PAYLOAD" | tee diagnostics/kernel-payload.sha256
+
+          cp "$KERNEL_PAYLOAD" \
+            "artifacts/${{ steps.parse.outputs.artifact_dir }}/kernel"
+
+      - name: Install extract-vmlinux
+        run: |
+          set -euxo pipefail
+
+          curl -fsSL \
+            https://raw.githubusercontent.com/torvalds/linux/master/scripts/extract-vmlinux \
+            -o extract-vmlinux
+
+          chmod +x extract-vmlinux
+
+          head -n 5 extract-vmlinux
+
+      - name: Extract vmlinux
+        id: vmlinux
+        shell: bash
+        run: |
+          set -o pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          KERNEL_PAYLOAD="${{ steps.kernel.outputs.kernel_payload }}"
+
+          VMLINUX="artifacts/$ARTIFACT_DIR/vmlinux"
+
+          rm -f "$VMLINUX"
+
+          echo "Trying extract-vmlinux on unpacked kernel payload"
+
+          if ./extract-vmlinux "$KERNEL_PAYLOAD" > "$VMLINUX"; then
+            true
+          else
+            echo "::warning::extract-vmlinux failed for kernel payload"
+            rm -f "$VMLINUX"
+          fi
+
+          if [ ! -s "$VMLINUX" ]; then
+            echo "Trying extract-vmlinux directly on boot.img"
+
+            if ./extract-vmlinux "${{ steps.boot.outputs.boot_img }}" > "$VMLINUX"; then
+              true
+            else
+              echo "::warning::extract-vmlinux failed for boot.img"
+              rm -f "$VMLINUX"
+            fi
+          fi
+
+          if [ -s "$VMLINUX" ]; then
+            file "$VMLINUX" | tee diagnostics/vmlinux-file.txt
+            ls -lh "$VMLINUX" | tee diagnostics/vmlinux-size.txt
+            sha256sum "$VMLINUX" | tee diagnostics/vmlinux.sha256
+
+            if file "$VMLINUX" | grep -q 'ELF'; then
+              echo "has_vmlinux=true" >> "$GITHUB_OUTPUT"
+              echo "vmlinux_path=$VMLINUX" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+          fi
+
+          echo "has_vmlinux=false" >> "$GITHUB_OUTPUT"
+          echo "vmlinux_path=" >> "$GITHUB_OUTPUT"
+
+          echo "::warning::An ELF vmlinux could not be extracted"
+
+      - name: Inspect vmlinux
+        if: steps.vmlinux.outputs.has_vmlinux == 'true'
+        continue-on-error: true
+        run: |
+          set -o pipefail
+
+          VMLINUX="${{ steps.vmlinux.outputs.vmlinux_path }}"
+
+          file "$VMLINUX"
+
+          aarch64-linux-gnu-readelf -h "$VMLINUX" \
+            | tee diagnostics/vmlinux-elf-header.txt
+
+          aarch64-linux-gnu-readelf -S "$VMLINUX" \
+            | tee diagnostics/vmlinux-sections.txt
+
+          aarch64-linux-gnu-readelf -s "$VMLINUX" \
+            > diagnostics/vmlinux-readelf-symbols.txt || true
+
+          if aarch64-linux-gnu-readelf -S "$VMLINUX" | grep -q '\.symtab'; then
+            echo "VMLINUX_HAS_SYMTAB=true" \
+              | tee diagnostics/vmlinux-symbol-table-status.txt
+          else
+            echo "VMLINUX_HAS_SYMTAB=false" \
+              | tee diagnostics/vmlinux-symbol-table-status.txt
+
+            echo "::warning::vmlinux has no .symtab section"
+          fi
+
+          if aarch64-linux-gnu-readelf -S "$VMLINUX" | grep -Eq '\.BTF|\.debug_info'; then
+            echo "VMLINUX_HAS_TYPE_INFO=true" \
+              | tee diagnostics/vmlinux-type-info-status.txt
+          else
+            echo "VMLINUX_HAS_TYPE_INFO=false" \
+              | tee diagnostics/vmlinux-type-info-status.txt
+
+            echo "::warning::vmlinux has no BTF or DWARF type information"
+          fi
+
+      - name: Extract structure layouts with pahole
+        if: steps.vmlinux.outputs.has_vmlinux == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          VMLINUX="${{ steps.vmlinux.outputs.vmlinux_path }}"
+
+          pahole -s task_struct "$VMLINUX" \
+            > "artifacts/$ARTIFACT_DIR/task_offsets.txt" \
+            2> diagnostics/pahole-task_struct-error.txt
+
+          TASK_STATUS=$?
+
+          pahole -s cred "$VMLINUX" \
+            > "artifacts/$ARTIFACT_DIR/cred_offsets.txt" \
+            2> diagnostics/pahole-cred-error.txt
+
+          CRED_STATUS=$?
+
+          pahole -s rt_mutex_waiter "$VMLINUX" \
+            > "artifacts/$ARTIFACT_DIR/waiter_offsets.txt" \
+            2> diagnostics/pahole-rt_mutex_waiter-error.txt
+
+          WAITER_STATUS=$?
+
+          {
+            echo "task_struct=$TASK_STATUS"
+            echo "cred=$CRED_STATUS"
+            echo "rt_mutex_waiter=$WAITER_STATUS"
+          } | tee diagnostics/pahole-status.txt
+
+          if [ ! -s "artifacts/$ARTIFACT_DIR/task_offsets.txt" ]; then
+            echo "pahole could not extract task_struct" \
+              > "artifacts/$ARTIFACT_DIR/task_offsets.txt"
+          fi
+
+          if [ ! -s "artifacts/$ARTIFACT_DIR/cred_offsets.txt" ]; then
+            echo "pahole could not extract cred" \
+              > "artifacts/$ARTIFACT_DIR/cred_offsets.txt"
+          fi
+
+          if [ ! -s "artifacts/$ARTIFACT_DIR/waiter_offsets.txt" ]; then
+            echo "pahole could not extract rt_mutex_waiter" \
+              > "artifacts/$ARTIFACT_DIR/waiter_offsets.txt"
+          fi
+
+          exit 0
+
+      - name: Extract selected kernel symbols
+        if: steps.vmlinux.outputs.has_vmlinux == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          VMLINUX="${{ steps.vmlinux.outputs.vmlinux_path }}"
+
+          aarch64-linux-gnu-nm -n "$VMLINUX" \
+            > diagnostics/all-symbols.txt \
+            2> diagnostics/nm-error.txt
+
+          NM_STATUS=$?
+
+          if [ "$NM_STATUS" -eq 0 ]; then
+            grep -E \
+              ' (init_task|root_task_group|ashmem_misc_fops|ashmem_fops|ashmem_ioctl|ashmem_compat_ioctl|compat_ashmem_ioctl|ashmem_mmap|ashmem_open|ashmem_release|ashmem_show_fdinfo|configfs_read_iter|configfs_read_file|configfs_bin_write_iter|noop_llseek|copy_splice_read|generic_file_splice_read|nfulnl_logger|loggers|random_boot_id_data|random_boot_id|sysctl_bootid|selinux_enforcing|selinux_enforcing_boot|selinux_state|selinux_blob_sizes|security_hook_heads|kmalloc_caches|anon_pipe_buf_ops)$' \
+              diagnostics/all-symbols.txt \
+              > "artifacts/$ARTIFACT_DIR/symbols.txt" || true
+          fi
+
+          if [ ! -s "artifacts/$ARTIFACT_DIR/symbols.txt" ]; then
+            echo "No matching symbols were available in vmlinux" \
+              > "artifacts/$ARTIFACT_DIR/symbols.txt"
+          fi
+
+          echo "nm_exit_status=$NM_STATUS" \
+            | tee diagnostics/nm-status.txt
+
+          cat "artifacts/$ARTIFACT_DIR/symbols.txt"
+
+          exit 0
+
+      - name: Extract fingerprint
+        shell: bash
+        run: |
+          set +e
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          DEVICE="${{ steps.parse.outputs.device }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+
+          FINGERPRINT=""
+
+          grep -aRho \
+            'google/[^[:space:]]*/[^[:space:]]*:[^[:space:]]*:[^[:space:]]*release-keys' \
+            work/factory \
+            work/images \
+            work/boot-unpacked \
+            2>/dev/null \
+            | head -n 1 \
+            > diagnostics/fingerprint-match.txt
+
+          if [ -s diagnostics/fingerprint-match.txt ]; then
+            FINGERPRINT="$(cat diagnostics/fingerprint-match.txt)"
+          fi
+
+          if [ -z "$FINGERPRINT" ]; then
+            FINGERPRINT="google/${DEVICE}/${DEVICE}:unknown/${VERSION}/unknown:user/release-keys"
+            echo "::warning::Exact fingerprint was not found; fallback used"
+          fi
+
+          printf '%s\n' "$FINGERPRINT" \
+            > "artifacts/$ARTIFACT_DIR/fingerprint.txt"
+
+          {
+            echo "BUILD_FINGERPRINT=$FINGERPRINT"
+          } >> "artifacts/$ARTIFACT_DIR/metadata.txt"
+
+          exit 0
+
+      - name: Generate extracted offsets and target header
+        if: steps.vmlinux.outputs.has_vmlinux == 'true'
+        continue-on-error: true
+        shell: bash
+        run: |
+          set +e
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          DEVICE="${{ steps.parse.outputs.device }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+          VMLINUX="${{ steps.vmlinux.outputs.vmlinux_path }}"
+          FINGERPRINT="$(cat "artifacts/$ARTIFACT_DIR/fingerprint.txt")"
+
+          if [ ! -f scripts/extract_kernel_offsets.py ]; then
+            echo "::warning::scripts/extract_kernel_offsets.py is missing"
+            exit 0
+          fi
+
+          python3 scripts/extract_kernel_offsets.py \
+            "$VMLINUX" \
+            "artifacts/$ARTIFACT_DIR/extracted_offsets.h" \
+            --variant "$DEVICE-$VERSION" \
+            --fingerprint "$FINGERPRINT"
+
+          STATUS=$?
+
+          echo "extract_kernel_offsets_status=$STATUS" \
+            | tee diagnostics/extract-kernel-offsets-status.txt
+
+          if [ "$STATUS" -eq 0 ]; then
+            cp \
+              "artifacts/$ARTIFACT_DIR/extracted_offsets.h" \
+              "artifacts/$ARTIFACT_DIR/target.h"
+          fi
+
+          exit 0
+
+      - name: Create fallback output files
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+          DEVICE="${{ steps.parse.outputs.device }}"
+          VERSION="${{ steps.parse.outputs.version }}"
+
+          if [ -f "artifacts/$ARTIFACT_DIR/fingerprint.txt" ]; then
+            FINGERPRINT="$(cat "artifacts/$ARTIFACT_DIR/fingerprint.txt")"
+          else
+            FINGERPRINT="google/${DEVICE}/${DEVICE}:unknown/${VERSION}/unknown:user/release-keys"
+            printf '%s\n' "$FINGERPRINT" \
+              > "artifacts/$ARTIFACT_DIR/fingerprint.txt"
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/task_offsets.txt" ]; then
+            echo "task_struct offsets unavailable" \
+              > "artifacts/$ARTIFACT_DIR/task_offsets.txt"
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/cred_offsets.txt" ]; then
+            echo "cred offsets unavailable" \
+              > "artifacts/$ARTIFACT_DIR/cred_offsets.txt"
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/waiter_offsets.txt" ]; then
+            echo "rt_mutex_waiter offsets unavailable" \
+              > "artifacts/$ARTIFACT_DIR/waiter_offsets.txt"
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/symbols.txt" ]; then
+            echo "kernel symbols unavailable" \
+              > "artifacts/$ARTIFACT_DIR/symbols.txt"
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/extracted_offsets.h" ]; then
+            cat > "artifacts/$ARTIFACT_DIR/extracted_offsets.h" <<EOF
+          #ifndef OFFSET_H
+          #define OFFSET_H
+
+          #define BUILD_VARIANT_LABEL "$DEVICE-$VERSION"
+          #define BUILD_FINGERPRINT "$FINGERPRINT"
+
+          /*
+           * Automatic offset extraction failed.
+           *
+           * See:
+           *   symbols.txt
+           *   task_offsets.txt
+           *   cred_offsets.txt
+           *   waiter_offsets.txt
+           *   diagnostics/
+           */
+
+          #endif
+          EOF
+          fi
+
+          if [ ! -f "artifacts/$ARTIFACT_DIR/target.h" ]; then
+            cp \
+              "artifacts/$ARTIFACT_DIR/extracted_offsets.h" \
+              "artifacts/$ARTIFACT_DIR/target.h"
+          fi
+
+      - name: Copy diagnostics to artifact
+        if: always()
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          mkdir -p "artifacts/$ARTIFACT_DIR/diagnostics"
+
+          cp -a diagnostics/. \
+            "artifacts/$ARTIFACT_DIR/diagnostics/" || true
+
+      - name: Display final artifact
+        if: always()
+        run: |
+          set -euxo pipefail
+
+          ARTIFACT_DIR="${{ steps.parse.outputs.artifact_dir }}"
+
+          echo "===== Artifact tree ====="
+
+          find "artifacts/$ARTIFACT_DIR" \
+            -maxdepth 4 \
+            -type f \
+            -printf '%p %k KB\n' \
+            | sort
+
+          echo "===== symbols.txt ====="
+          cat "artifacts/$ARTIFACT_DIR/symbols.txt"
+
+          echo "===== metadata.txt ====="
+          cat "artifacts/$ARTIFACT_DIR/metadata.txt"
+
+      - name: Upload result folder
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ steps.parse.outputs.artifact_dir }}
+          path: artifacts/${{ steps.parse.outputs.artifact_dir }}
+          retention-days: 30
+          if-no-files-found: error
