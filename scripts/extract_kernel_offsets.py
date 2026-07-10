@@ -21,6 +21,7 @@ SYMBOL_ALIASES = {
     "copy_splice_read": [
         "copy_splice_read",
         "direct_splice_read",
+        "splice_read",
     ],
     "filemap_splice_read": [
         "filemap_splice_read",
