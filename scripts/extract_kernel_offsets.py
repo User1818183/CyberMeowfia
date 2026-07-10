@@ -22,10 +22,10 @@ SYMBOL_ALIASES = {
         "copy_splice_read",
         "direct_splice_read",
         "splice_read",
+        "generic_file_splice_read",
     ],
     "filemap_splice_read": [
         "filemap_splice_read",
-        "generic_file_splice_read",
     ],
     "selinux_enforcing": [
         "selinux_enforcing",
