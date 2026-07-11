@@ -38,8 +38,18 @@ jobs:
           NDK_CACHE="$HOME/android-ndk-cache"
           mkdir -p "$NDK_CACHE"
 
-          if ! find "$NDK_CACHE" -type f -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin/clang' -perm -111 -print -quit | grep -q .; then
+          find_clang() {
+            find "$NDK_CACHE" \
+              -path '*/toolchains/llvm/prebuilt/*/bin/clang' \
+              -print -quit
+          }
+
+          CLANG_PATH="$(find_clang)"
+
+          if [[ -z "$CLANG_PATH" ]]; then
             cd "$NDK_CACHE"
+
+            rm -rf "$NDK_VERSION" "${NDK_VERSION}-linux.zip"
 
             wget -q \
               "https://dl.google.com/android/repository/${NDK_VERSION}-linux.zip" \
@@ -47,22 +57,21 @@ jobs:
 
             unzip -q "${NDK_VERSION}-linux.zip"
             rm -f "${NDK_VERSION}-linux.zip"
+
+            CLANG_PATH="$(find_clang)"
           fi
 
-          CLANG_PATH="$(find "$NDK_CACHE" \
-            -type f \
-            -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin/clang' \
-            -perm -111 \
-            -print -quit)"
-
-          if [[ -z "$CLANG_PATH" ]]; then
+          if [[ -z "$CLANG_PATH" || ! -x "$CLANG_PATH" ]]; then
             echo 'NDK clang executable was not found after extraction' >&2
-            find "$NDK_CACHE" -maxdepth 5 -type d -print >&2
+            find "$NDK_CACHE" -maxdepth 8 \
+              \( -type f -o -type l \) \
+              -path '*/toolchains/llvm/prebuilt/*/bin/clang*' \
+              -print >&2
             exit 1
           fi
 
           TOOLCHAIN_BIN="$(dirname "$CLANG_PATH")"
-          NDK_ROOT="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$TOOLCHAIN_BIN")")")")")"
+          NDK_ROOT="${CLANG_PATH%%/toolchains/llvm/prebuilt/*}"
 
           CC_WRAPPER="$RUNNER_TEMP/aarch64-linux-android-clang"
           printf '%s\n' \
