@@ -30,14 +30,15 @@ jobs:
 
       - name: Setup Android NDK r29
         shell: bash
+        env:
+          API: ${{ inputs.api || '36' }}
         run: |
           set -euxo pipefail
 
           NDK_CACHE="$HOME/android-ndk-cache"
-          NDK_ROOT="$NDK_CACHE/$NDK_VERSION"
+          mkdir -p "$NDK_CACHE"
 
-          if [[ ! -x "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.api }}-clang" ]]; then
-            mkdir -p "$NDK_CACHE"
+          if ! find "$NDK_CACHE" -type f -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin/clang' -perm -111 -print -quit | grep -q .; then
             cd "$NDK_CACHE"
 
             wget -q \
@@ -48,17 +49,44 @@ jobs:
             rm -f "${NDK_VERSION}-linux.zip"
           fi
 
+          CLANG_PATH="$(find "$NDK_CACHE" \
+            -type f \
+            -path '*/toolchains/llvm/prebuilt/linux-x86_64/bin/clang' \
+            -perm -111 \
+            -print -quit)"
+
+          if [[ -z "$CLANG_PATH" ]]; then
+            echo 'NDK clang executable was not found after extraction' >&2
+            find "$NDK_CACHE" -maxdepth 5 -type d -print >&2
+            exit 1
+          fi
+
+          TOOLCHAIN_BIN="$(dirname "$CLANG_PATH")"
+          NDK_ROOT="$(dirname "$(dirname "$(dirname "$(dirname "$(dirname "$TOOLCHAIN_BIN")")")")")"
+
+          CC_WRAPPER="$RUNNER_TEMP/aarch64-linux-android-clang"
+          printf '%s\n' \
+            '#!/usr/bin/env bash' \
+            "exec \"$CLANG_PATH\" --target=\"aarch64-linux-android$API\" \"\$@\"" \
+            > "$CC_WRAPPER"
+          chmod +x "$CC_WRAPPER"
+          CC_COMMAND="$CC_WRAPPER"
+
           echo "ANDROID_NDK_HOME=$NDK_ROOT" >> "$GITHUB_ENV"
           echo "NDK_ROOT=$NDK_ROOT" >> "$GITHUB_ENV"
-          echo "CC=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.api }}-clang" >> "$GITHUB_ENV"
+          echo "TOOLCHAIN_BIN=$TOOLCHAIN_BIN" >> "$GITHUB_ENV"
+          echo "CC_COMMAND=$CC_COMMAND" >> "$GITHUB_ENV"
 
-          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.api }}-clang" --version
+          echo "NDK_ROOT=$NDK_ROOT"
+          echo "CLANG_PATH=$CLANG_PATH"
+          echo "CC_COMMAND=$CC_COMMAND"
+          "$CLANG_PATH" --target="aarch64-linux-android$API" --version
 
       - name: Build and archive all targets
         shell: bash
         working-directory: ${{ env.EXPLOIT_DIR }}
         env:
-          API: ${{ inputs.api }}
+          API: ${{ inputs.api || '36' }}
         run: |
           set -euxo pipefail
 
@@ -122,7 +150,7 @@ jobs:
               API="$API" \
               NDK_ROOT="$NDK_ROOT" \
               ANDROID_NDK_HOME="$ANDROID_NDK_HOME" \
-              CC="$CC" \
+              CC="$CC_COMMAND" \
               preload
 
             PRELOAD_FILE="build/$TARGET/bin/preload.so"
@@ -181,7 +209,7 @@ jobs:
       - name: Upload combined artifact
         uses: actions/upload-artifact@v4
         with:
-          name: exploit-all-targets-api-${{ inputs.api }}
+          name: exploit-all-targets-api-${{ inputs.api || '36' }}
           path: |
             exploit-all-targets.tar.gz
             exploit-all-targets.tar.gz.sha256
@@ -195,9 +223,9 @@ jobs:
           {
             echo '## Build completed'
             echo
-            echo "- API level: ${{ inputs.api }}"
+            echo "- API level: ${{ inputs.api || '36' }}"
             echo "- Target archives: $(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)"
-            echo '- Artifact: `exploit-all-targets-api-${{ inputs.api }}`'
+            echo '- Artifact: `exploit-all-targets-api-${{ inputs.api || '36' }}`'
             echo '- Combined archive: `exploit-all-targets.tar.gz`'
             echo
             echo 'Each target archive contains:'
