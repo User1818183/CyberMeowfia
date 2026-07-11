@@ -1,0 +1,206 @@
+name: Build Exploit - All Targets
+
+on:
+  workflow_dispatch:
+    inputs:
+      api:
+        description: Android API level
+        required: false
+        default: '36'
+        type: string
+
+jobs:
+  build-all-targets:
+    runs-on: ubuntu-latest
+
+    env:
+      NDK_VERSION: android-ndk-r29
+      EXPLOIT_DIR: IonStack/CVE-2026-43499/exploit
+      OUTPUT_DIR: ${{ github.workspace }}/target-archives
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          set -euxo pipefail
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq wget unzip tar gzip
+
+      - name: Setup Android NDK r29
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          NDK_CACHE="$HOME/android-ndk-cache"
+          NDK_ROOT="$NDK_CACHE/$NDK_VERSION"
+
+          if [[ ! -x "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.api }}-clang" ]]; then
+            mkdir -p "$NDK_CACHE"
+            cd "$NDK_CACHE"
+
+            wget -q \
+              "https://dl.google.com/android/repository/${NDK_VERSION}-linux.zip" \
+              -O "${NDK_VERSION}-linux.zip"
+
+            unzip -q "${NDK_VERSION}-linux.zip"
+            rm -f "${NDK_VERSION}-linux.zip"
+          fi
+
+          echo "ANDROID_NDK_HOME=$NDK_ROOT" >> "$GITHUB_ENV"
+          echo "NDK_ROOT=$NDK_ROOT" >> "$GITHUB_ENV"
+          echo "CC=$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.api }}-clang" >> "$GITHUB_ENV"
+
+          "$NDK_ROOT/toolchains/llvm/prebuilt/linux-x86_64/bin/aarch64-linux-android${{ inputs.api }}-clang" --version
+
+      - name: Build and archive all targets
+        shell: bash
+        working-directory: ${{ env.EXPLOIT_DIR }}
+        env:
+          API: ${{ inputs.api }}
+        run: |
+          set -euxo pipefail
+
+          TARGETS=(
+            bluejay-BP2A.250705.008
+            blazer-CP1A.260305.018
+            blazer-CP1A.260405.005
+            blazer-CP1A.260505.005.A1
+            blazer-CP1A.260505.005
+            blazer-CP2A.260605.012.C1
+            blazer-CP2A.260605.012
+            caiman-CP2A.260605.012.C1
+            caiman-CP2A.260605.012
+            comet-CP2A.260605.012.C1
+            comet-CP2A.260605.012
+            frankel-CP1A.260305.018
+            frankel-CP1A.260405.005
+            frankel-CP1A.260505.005.A1
+            frankel-CP1A.260505.005
+            frankel-CP2A.260605.012.C1
+            frankel-CP2A.260605.012
+            komodo-CP2A.260605.012.C1
+            komodo-CP2A.260605.012
+            mustang-CP1A.260305.018
+            mustang-CP1A.260405.005
+            mustang-CP1A.260505.005.A1
+            mustang-CP1A.260505.005
+            mustang-CP2A.260605.012.C1
+            mustang-CP2A.260605.012
+            rango-CP1A.260305.018
+            rango-CP1A.260405.005
+            rango-CP1A.260505.005.A1
+            rango-CP1A.260505.005
+            rango-CP2A.260605.012.C1
+            rango-CP2A.260605.012
+            stallion-CP1A.260305.018
+            stallion-CP1A.260405.005
+            stallion-CP1A.260505.005.A1
+            stallion-CP1A.260505.005
+            stallion-CP2A.260605.012.C1
+            stallion-CP2A.260605.012
+            tegu-CP2A.260605.012
+            tokay-CP2A.260605.012.C1
+            tokay-CP2A.260605.012
+          )
+
+          mkdir -p "$OUTPUT_DIR"
+          rm -f "$OUTPUT_DIR"/*.tar.gz
+
+          printf 'target\tfile\tsize\tsha256\n' > "$OUTPUT_DIR/manifest.tsv"
+
+          for TARGET in "${TARGETS[@]}"; do
+            echo "========================================="
+            echo "Building target: $TARGET"
+            echo "API level: $API"
+            echo "========================================="
+
+            make PROJECT="$TARGET" API="$API" clean || true
+            make \
+              PROJECT="$TARGET" \
+              API="$API" \
+              NDK_ROOT="$NDK_ROOT" \
+              ANDROID_NDK_HOME="$ANDROID_NDK_HOME" \
+              CC="$CC" \
+              preload
+
+            PRELOAD_FILE="build/$TARGET/bin/preload.so"
+
+            if [[ ! -f "$PRELOAD_FILE" ]]; then
+              echo "Build failed: $PRELOAD_FILE was not created" >&2
+              exit 1
+            fi
+
+            STAGE_DIR="$(mktemp -d)"
+            cp "$PRELOAD_FILE" "$STAGE_DIR/preload.so"
+
+            sha256sum "$STAGE_DIR/preload.so" > "$STAGE_DIR/SHA256SUMS"
+
+            tar -C "$STAGE_DIR" \
+              -czf "$OUTPUT_DIR/${TARGET}.tar.gz" \
+              preload.so SHA256SUMS
+
+            FILE_SIZE="$(stat -c '%s' "$PRELOAD_FILE")"
+            FILE_SHA256="$(sha256sum "$PRELOAD_FILE" | awk '{print $1}')"
+            printf '%s\t%s\t%s\t%s\n' \
+              "$TARGET" \
+              "${TARGET}.tar.gz" \
+              "$FILE_SIZE" \
+              "$FILE_SHA256" \
+              >> "$OUTPUT_DIR/manifest.tsv"
+
+            rm -rf "$STAGE_DIR"
+          done
+
+          EXPECTED_COUNT="${#TARGETS[@]}"
+          ACTUAL_COUNT="$(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)"
+
+          if [[ "$ACTUAL_COUNT" -ne "$EXPECTED_COUNT" ]]; then
+            echo "Expected $EXPECTED_COUNT target archives, found $ACTUAL_COUNT" >&2
+            exit 1
+          fi
+
+      - name: Create combined archive
+        shell: bash
+        run: |
+          set -euxo pipefail
+
+          cd "$OUTPUT_DIR"
+
+          tar -czf "$GITHUB_WORKSPACE/exploit-all-targets.tar.gz" \
+            ./*.tar.gz \
+            ./manifest.tsv
+
+          sha256sum "$GITHUB_WORKSPACE/exploit-all-targets.tar.gz" \
+            > "$GITHUB_WORKSPACE/exploit-all-targets.tar.gz.sha256"
+
+          ls -lh "$GITHUB_WORKSPACE/exploit-all-targets.tar.gz" \
+                 "$GITHUB_WORKSPACE/exploit-all-targets.tar.gz.sha256"
+
+      - name: Upload combined artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exploit-all-targets-api-${{ inputs.api }}
+          path: |
+            exploit-all-targets.tar.gz
+            exploit-all-targets.tar.gz.sha256
+          retention-days: 30
+          if-no-files-found: error
+          compression-level: 0
+
+      - name: Create build summary
+        shell: bash
+        run: |
+          {
+            echo '## Build completed'
+            echo
+            echo "- API level: ${{ inputs.api }}"
+            echo "- Target archives: $(find "$OUTPUT_DIR" -maxdepth 1 -type f -name '*.tar.gz' | wc -l)"
+            echo '- Artifact: `exploit-all-targets-api-${{ inputs.api }}`'
+            echo '- Combined archive: `exploit-all-targets.tar.gz`'
+            echo
+            echo 'Each target archive contains:'
+            echo '- `preload.so`'
+            echo '- `SHA256SUMS`'
+          } >> "$GITHUB_STEP_SUMMARY"
