@@ -10,6 +10,8 @@
 <a href="https://nebusec.ai/buglist">Bug list (885+)</a>
 </p>
 
+## IonStack followup, follow https://github.com/NebuSec/CyberMeowfia/issues/44
+
 ## Latest research
 
 - **IonStack part II**: GhostLock, a stack-UAF that has existed in ALL Linux distributions for 15 years<br>
