@@ -1,0 +1,54 @@
+name: Build Ndays
+
+on:
+  push:
+    branches: [ main, master ]
+    paths:
+      - 'security-research/Ndays/Android-CVE-2026-43074/**'
+      - '.github/workflows/build.yml'
+  pull_request:
+    paths:
+      - 'security-research/Ndays/Android-CVE-2026-43074/**'
+      - '.github/workflows/build.yml'
+  workflow_dispatch:
+
+# Усі кроки run виконуються в директорії з Makefile
+defaults:
+  run:
+    working-directory: security-research/Ndays/Android-CVE-2026-43074
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK r29
+        id: setup-ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r29
+          add-to-path: false
+          link-to-sdk: false
+
+      - name: Build exploit (aarch64, static)
+        env:
+          NDK_ROOT: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: make exploit
+
+      - name: Verify sha256 checksum
+        run: sha256sum build/exploit
+
+      - name: Upload exploit artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: exploit-aarch64-android35
+          path: security-research/Ndays/Android-CVE-2026-43074/build/exploit
+          if-no-files-found: error
+          retention-days: 30
+
+      - name: Cleanup
+        if: always()
+        run: make clean
