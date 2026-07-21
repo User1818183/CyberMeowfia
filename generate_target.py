@@ -325,86 +325,165 @@ def locate_token_tables(data: bytes) -> tuple[int, int, tuple[int, ...]]:
     return next(iter(unique.values()))
 
 
-def locate_markers(data: bytes, token_table_off: int) -> tuple[int, tuple[int, ...]]:
-    if token_table_off < 0 or token_table_off > len(data):
-        fail(f"invalid token_table_off: {token_table_off:#x}")
+from __future__ import annotations
 
-    candidates: dict[int, tuple[int, ...]] = {}
+import struct
 
-    MAX_PADDING = 128
-    MIN_MARKERS = 16      # можна повернути 4 якщо дуже треба
-    MAX_MARKERS = 262144  # захист від нескінченного пошуку
+from vmlinux_to_elf.core.kallsyms import (
+    KallsymsFinder,
+    KallsymsNotFoundException,
+)
 
-    for padding in range(0, MAX_PADDING + 1, 4):
-        end = token_table_off - padding
 
-        if end < 4 or (end & 3):
-            continue
+def locate_markers(
+    data: bytes,
+    token_table_off: int,
+) -> tuple[int, tuple[int, ...]]:
+    """
+    Знаходить kallsyms_markers через KallsymsFinder із vmlinux-to-elf.
 
-        start_pos = end - 4
+    Повертає:
+        (
+            offset масиву kallsyms_markers,
+            tuple зі значеннями marker'ів,
+        )
 
-        try:
-            current = u32(data, start_pos)
-        except Exception:
-            continue
+    token_table_off використовується для перевірки результату,
+    знайденого бібліотекою.
+    """
 
-        reverse = [current]
-        p = start_pos
+    if not isinstance(data, bytes):
+        raise TypeError("data must be bytes")
 
-        while p >= 4 and len(reverse) < MAX_MARKERS:
-            previous = u32(data, p - 4)
+    if not data:
+        raise ValueError("data is empty")
 
-            # читаємо назад, тому значення повинні спадати
-            if previous >= current:
-                break
+    if not 0 <= token_table_off <= len(data):
+        raise ValueError(
+            f"token_table_off {token_table_off:#x} виходить за межі "
+            f"data розміром {len(data):#x}"
+        )
 
-            reverse.append(previous)
+    try:
+        # Для ARM64 можна явно встановити bit_size=64.
+        finder = KallsymsFinder(
+            kernel_img=data,
+            bit_size=64,
+        )
+    except KallsymsNotFoundException as exc:
+        raise RuntimeError(
+            "vmlinux-to-elf не зміг знайти kallsyms у kernel image"
+        ) from exc
+    except Exception as exc:
+        raise RuntimeError(
+            f"Помилка KallsymsFinder: {exc}"
+        ) from exc
 
-            p -= 4
-            current = previous
+    markers_off = finder.kallsyms_markers__offset
+    detected_token_table_off = finder.kallsyms_token_table__offset
 
-            if previous == 0:
-                break
+    if markers_off is None:
+        raise RuntimeError(
+            "KallsymsFinder не визначив kallsyms_markers__offset"
+        )
 
-        if reverse[-1] != 0:
-            continue
+    if detected_token_table_off is None:
+        raise RuntimeError(
+            "KallsymsFinder не визначив kallsyms_token_table__offset"
+        )
 
-        values = tuple(reversed(reverse))
+    if markers_off < 0 or markers_off >= len(data):
+        raise RuntimeError(
+            f"Некоректний kallsyms_markers offset: {markers_off:#x}"
+        )
 
-        if len(values) < MIN_MARKERS:
-            continue
+    if detected_token_table_off <= markers_off:
+        raise RuntimeError(
+            "kallsyms_token_table розташована перед kallsyms_markers: "
+            f"markers={markers_off:#x}, "
+            f"token_table={detected_token_table_off:#x}"
+        )
 
-        # додаткова перевірка монотонності
-        if any(a >= b for a, b in zip(values, values[1:])):
-            continue
+    # Перевіряємо offset, який був переданий старим кодом.
+    #
+    # KallsymsFinder може визначити трохи інше зміщення, якщо в старому
+    # коді token_table_off був знайдений менш точно.
+    if token_table_off != detected_token_table_off:
+        print(
+            "Warning: token_table_off не збігається з результатом "
+            "vmlinux-to-elf: "
+            f"provided={token_table_off:#x}, "
+            f"detected={detected_token_table_off:#x}"
+        )
 
-        start = end - len(values) * 4
+    num_symbols = getattr(finder, "num_symbols", None)
 
-        candidates[start] = values
+    if num_symbols is None:
+        num_symbols = getattr(finder, "number_of_symbols", None)
 
-    if not candidates:
-        fail("kallsyms markers not found")
+    if not isinstance(num_symbols, int) or num_symbols <= 0:
+        raise RuntimeError(
+            "KallsymsFinder не повернув коректну кількість символів"
+        )
 
-    if len(candidates) == 1:
-        return next(iter(candidates.items()))
+    # Один marker створюється для кожного блоку із 256 символів.
+    marker_count = (num_symbols + 255) // 256
 
-    # оцінка кандидата:
-    # 1. більше маркерів
-    # 2. менший padding
-    def score(item):
-        start, values = item
-        padding = token_table_off - (start + len(values) * 4)
-        return (len(values), -padding)
+    # У твоєму початковому методі markers читаються як u32.
+    marker_size = 4
+    markers_size = marker_count * marker_size
+    markers_end = markers_off + markers_size
 
-    best = max(candidates.items(), key=score)
+    if markers_end > detected_token_table_off:
+        raise RuntimeError(
+            "Розрахований масив kallsyms_markers заходить у "
+            "kallsyms_token_table: "
+            f"markers={markers_off:#x}-{markers_end:#x}, "
+            f"token_table={detected_token_table_off:#x}"
+        )
 
-    print(
-        "Warning: multiple kallsyms_markers candidates: "
-        + repr([(hex(k), len(v)) for k, v in candidates.items()]),
-        file=sys.stderr,
-    )
+    if markers_end > len(data):
+        raise RuntimeError(
+            "Масив kallsyms_markers виходить за межі kernel image"
+        )
 
-    return best
+    endian = ">" if finder.is_big_endian else "<"
+
+    try:
+        markers = struct.unpack_from(
+            f"{endian}{marker_count}I",
+            data,
+            markers_off,
+        )
+    except struct.error as exc:
+        raise RuntimeError(
+            "Не вдалося прочитати kallsyms_markers"
+        ) from exc
+
+    markers = tuple(markers)
+
+    if not markers:
+        raise RuntimeError("Масив kallsyms_markers порожній")
+
+    if markers[0] != 0:
+        raise RuntimeError(
+            "Перший kallsyms marker повинен дорівнювати 0, "
+            f"отримано {markers[0]:#x}"
+        )
+
+    if any(previous >= current for previous, current in zip(markers, markers[1:])):
+        raise RuntimeError(
+            "Значення kallsyms_markers не є строго зростаючими"
+        )
+
+    padding = detected_token_table_off - markers_end
+
+    if padding:
+        print(
+            f"kallsyms_markers padding перед token table: {padding} bytes"
+        )
+
+    return markers_off, markers
 
 def compressed_symbol_end(data: bytes, pos: int, limit: int) -> int:
     if pos >= limit:
