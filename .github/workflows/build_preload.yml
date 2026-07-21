@@ -148,7 +148,7 @@ jobs:
           echo "boot.img успішно витягнуто:"
           ls -lh boot.img
 
-      - name: Unpack boot.img and patch kernel payload
+            - name: Unpack boot.img and patch kernel payload
         run: |
           mkdir -p boot_work
           cd boot_work
@@ -162,23 +162,17 @@ jobs:
             exit 1
           fi
           
-          echo "Перевірка заголовка ядра (має бути ARM64)..."
-          # magiskboot unpack автоматично розпаковує ядро. Перевіряємо наявність ARM64 magic.
-          if hexdump -C kernel | head -n 1 | grep -q "41 52 4d 64"; then
-            echo "Ядро успішно розпаковано і має ARM\\x64 magic."
-          else
-            echo "Увага: ядро все ще стиснуте або невідомого формату. Спробуємо розпакувати вручну..."
-            if file kernel | grep -qi "gzip"; then
-              mv kernel kernel.gz && gunzip kernel.gz
-            elif file kernel | grep -qi "LZ4"; then
-              sudo apt-get install -y lz4
-              mv kernel kernel.lz4 && lz4 -d kernel.lz4 kernel
-            elif file kernel | grep -qi "bzip2"; then
-              mv kernel kernel.bz2 && bunzip2 kernel.bz2
-            fi
+          echo "Перевірка стиснення ядра..."
+          if file kernel | grep -qi "gzip"; then
+            mv kernel kernel.gz && gunzip kernel.gz
+          elif file kernel | grep -qi "LZ4"; then
+            sudo apt-get install -y lz4
+            mv kernel kernel.lz4 && lz4 -d kernel.lz4 kernel
+          elif file kernel | grep -qi "bzip2"; then
+            mv kernel kernel.bz2 && bunzip2 kernel.bz2
           fi
 
-          echo "Створення нового boot.img з розпакованим ядром за допомогою Python..."
+          echo "Очищення ядра від appended DTB та створення нового boot.img..."
           python3 - <<'EOF'
           import struct
 
@@ -188,24 +182,30 @@ jobs:
           if boot[:8] != b"ANDROID!":
               raise SystemExit("Помилка: вхідний файл не є Android boot image")
 
-          # Зчитуємо розмір заголовка
           header_size = struct.unpack_from("<I", boot, 20)[0]
-          # Ядро завжди вирівнюється на 4096 байт після заголовка
           kernel_offset = (header_size + 4095) & ~4095
 
           with open("kernel", "rb") as f:
               kernel = f.read()
 
-          # Оновлюємо розмір ядра у заголовку (зміщення 8)
+          # Зчитуємо справжній розмір Image з заголовка arm64 (зміщення 0x10)
+          image_size = struct.unpack_from("<Q", kernel, 16)[0]
+          
+          if image_size < len(kernel):
+              print(f"Виявлено додаткові дані (DTB/сміття) після ядра. Обрізаємо з {len(kernel)} до {image_size} байт.")
+              kernel = kernel[:image_size]
+          elif image_size > len(kernel):
+              print("Увага: image_size більший за розмір файлу ядра!")
+
+          # Оновлюємо розмір ядра у заголовку boot.img (зміщення 8)
           struct.pack_into("<I", boot, 8, len(kernel))
 
-          # Склеюємо заголовок (до початку ядра) і розпаковане ядро. 
-          # generate_target.py не читає ramdisk, тому ми його відкидаємо.
+          # Склеюємо заголовок і очищене ядро
           with open("new_boot.img", "wb") as f:
               f.write(boot[:kernel_offset])
               f.write(kernel)
 
-          print(f"Створено new_boot.img з розпакованим ядром. Розмір ядра: {len(kernel)} байт.")
+          print(f"Створено new_boot.img з очищеним ядром. Розмір ядра: {len(kernel)} байт.")
           EOF
 
           if [ ! -f new_boot.img ]; then
@@ -217,16 +217,6 @@ jobs:
           cd ..
           echo "Створено boot_uncompressed.img:"
           ls -lh boot_uncompressed.img
-
-      - name: Generate target.h
-        env:
-          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
-        run: |
-          echo "Генерація target.h з розпакованого boot.img..."
-          python3 generate_target.py \
-            --boot boot_uncompressed.img \
-            --profile dynamic_profile.json \
-            -o source/src/target.h
 
       - name: Generate target.h
         env:
