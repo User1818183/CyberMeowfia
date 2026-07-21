@@ -1,0 +1,117 @@
+name: Build CVE-2026-43499 preload.so
+
+on:
+  workflow_dispatch:
+    inputs:
+      factory_image_url:
+        description: 'Пряме посилання на factory image (.zip або .tar.gz)'
+        required: true
+        default: 'https://dl.google.com/dl/android/aosp/blueline-pq3a.190505.001-factory-5dac7196.zip'
+      p0_phys_offset:
+        description: 'Фізичний зсув (наприклад, 0x80000000)'
+        required: true
+        default: '0x80000000'
+      p0_kernel_phys_load:
+        description: 'Фізична адреса завантаження ядра (наприклад, 0xc7800000)'
+        required: true
+        default: '0xc7800000'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Android NDK
+        uses: nttld/setup-ndk@v1
+        id: setup-ndk
+        with:
+          ndk-version: r29
+          add-to-path: false
+
+      - name: Install dependencies (llvm, python3, utils)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y llvm python3 python3-pip unzip wget tar jq
+          # Перевіряємо, що llvm-objdump доступний
+          llvm-objdump --version
+
+      - name: Create profile.json from inputs
+        run: |
+          echo "Створення тимчасового профілю з вхідних даних..."
+          jq -n \
+            --arg phys "${{ github.event.inputs.p0_phys_offset }}" \
+            --arg load "${{ github.event.inputs.p0_kernel_phys_load }}" \
+            '{p0_phys_offset: $phys, p0_kernel_phys_load: $load}' > dynamic_profile.json
+          
+          echo "Згенерований dynamic_profile.json:"
+          cat dynamic_profile.json
+
+      - name: Download and extract Factory Image
+        run: |
+          mkdir -p firmware
+          cd firmware
+          
+          echo "Завантаження factory image..."
+          wget -q -O factory.zip "${{ github.event.inputs.factory_image_url }}"
+          
+          echo "Розпаковка архіву..."
+          unzip -q factory.zip -d unzipped
+          
+          # Шукаємо вкладений архів (зазвичай Google пакує образи у image-*.zip)
+          cd unzipped
+          INNER_ZIP=$(find . -name "image-*.zip" -o -name "*.tar.gz" | head -n 1)
+          
+          if [ -z "$INNER_ZIP" ]; then
+            echo "Вкладений архів не знайдено. Шукаємо boot.img..."
+            find . -name "boot.img" -exec cp {} ../../boot.img \;
+          else
+            echo "Знайдено вкладений архів: $INNER_ZIP. Розпаковуємо..."
+            if [[ "$INNER_ZIP" == *.zip ]]; then
+              unzip -q "$INNER_ZIP" -d extracted_img
+            else
+              tar -xzf "$INNER_ZIP" -C extracted_img
+            fi
+            find extracted_img -name "boot.img" -exec cp {} ../../boot.img \;
+          fi
+          
+          cd ../..
+          if [ ! -f "boot.img" ]; then
+            echo "Помилка: boot.img не знайдено у factory image!"
+            exit 1
+          fi
+          echo "boot.img успішно витягнуто:"
+          ls -lh boot.img
+
+      - name: Generate target.h
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          echo "Генерація target.h..."
+          python3 generate_target.py \
+            --boot boot.img \
+            --profile dynamic_profile.json \
+            -o source/src/target.h
+
+      - name: Build preload.so
+        env:
+          ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
+        run: |
+          # Використовуємо linux-x86_64 для prebuilt, оскільки GitHub Actions працює на Ubuntu
+          make -C source clean preload NDK_PREBUILT=linux-x86_64
+
+      - name: Upload target.h artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: target-h-generated
+          path: source/src/target.h
+          if-no-files-found: error
+
+      - name: Upload preload.so artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: preload-so
+          path: source/build/bin/preload.so
+          if-no-files-found: error
