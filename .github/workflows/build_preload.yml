@@ -162,6 +162,7 @@ jobs:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
           echo "Генерація target.h з очищеного boot.img..."
+          python3 -m pip install vmlinux-to-elf
           python3 generate_target.py \
             --boot boot_uncompressed.img \
             --profile dynamic_profile.json \
