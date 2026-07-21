@@ -148,7 +148,7 @@ jobs:
           echo "boot.img успішно витягнуто:"
           ls -lh boot.img
 
-      - name: Unpack boot.img and patch kernel payload
+            - name: Unpack boot.img and patch kernel payload
         run: |
           mkdir -p boot_work
           cd boot_work
@@ -248,4 +248,3 @@ jobs:
           name: preload-so
           path: source/build/bin/preload.so
           if-no-files-found: error
-		  
