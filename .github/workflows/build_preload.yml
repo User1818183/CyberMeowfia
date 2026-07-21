@@ -36,29 +36,20 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y llvm python3 python3-pip unzip wget tar
 
-          echo "Завантаження Magisk для отримання magiskboot..."
-          wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O /tmp/magisk.apk
+          echo "Завантаження Magisk ZIP для отримання magiskboot..."
+          # Використовуємо посилання на ZIP-архів Magisk з GitHub Releases
+          wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.zip -O /tmp/magisk.zip
           
-          # .apk файл — це просто ZIP-архів. Розпаковуємо його.
+          # Розпаковуємо архів
           mkdir -p /tmp/magisk_extracted
-          unzip -q /tmp/magisk.apk -d /tmp/magisk_extracted
+          unzip -q /tmp/magisk.zip -d /tmp/magisk_extracted
           
-          # Бінарник magiskboot лежить у теці lib/<arch>/ (може бути arm64-v8a або x86_64)
-          # Спочатку шукаємо версію для x86_64 (оскільки GitHub Action працює на x86_64), 
-          # якщо не знайдемо — беремо arm64 і будемо запускати через емулятор (qemu)
-          MAGISKBOOT_BIN=$(find /tmp/magisk_extracted/lib -name "magiskboot" | grep "x86_64" | head -n 1)
+          # У ZIP-архіві бінарник magiskboot лежить у теці arm64-v8a/
+          MAGISKBOOT_BIN="/tmp/magisk_extracted/arm64-v8a/magiskboot"
           
-          if [ -z "$MAGISKBOOT_BIN" ]; then
-            echo "Бінарник для x86_64 не знайдено, шукаємо arm64..."
-            MAGISKBOOT_BIN=$(find /tmp/magisk_extracted/lib -name "magiskboot" | grep "arm64-v8a" | head -n 1)
-            if [ -n "$MAGISKBOOT_BIN" ]; then
-              # Встановлюємо QEMU для запуску ARM64 бінарників на x86_64
-              sudo apt-get install -y qemu-user-static
-            fi
-          fi
-          
-          if [ -z "$MAGISKBOOT_BIN" ]; then
-            echo "Помилка: magiskboot не знайдено в APK!"
+          if [ ! -f "$MAGISKBOOT_BIN" ]; then
+            echo "Помилка: magiskboot не знайдено в ZIP-архіві!"
+            find /tmp/magisk_extracted -name "magiskboot" -type f
             exit 1
           fi
           
@@ -68,7 +59,9 @@ jobs:
           sudo chmod +x /usr/local/bin/magiskboot
           
           # Перевіряємо, що llvm-objdump та magiskboot доступні
+          echo "Перевірка llvm-objdump:"
           llvm-objdump --version
+          echo "Перевірка magiskboot:"
           magiskboot --help || true
 
       - name: Create profile.json from inputs
