@@ -98,6 +98,7 @@ jobs:
           cp "$MAGISKBOOT" ./magiskboot
           chmod +x ./magiskboot
 
+          # Копіюємо в /usr/local/bin для зручності використання в наступних кроках
           sudo cp ./magiskboot /usr/local/bin/magiskboot
           sudo chmod +x /usr/local/bin/magiskboot
 
@@ -105,6 +106,7 @@ jobs:
 
       - name: Create profile.json from inputs
         run: |
+          echo "Створення тимчасового профілю з вхідних даних..."
           jq -n \
             --arg phys "${{ github.event.inputs.p0_phys_offset }}" \
             --arg load "${{ github.event.inputs.p0_kernel_phys_load }}" \
@@ -124,6 +126,7 @@ jobs:
           echo "Розпаковка архіву..."
           unzip -q factory.zip -d unzipped
           
+          # Шукаємо вкладений архів (зазвичай Google пакує образи у image-*.zip)
           cd unzipped
           INNER_ZIP=$(find . -name "image-*.zip" -o -name "*.tar.gz" | head -n 1)
           
@@ -148,7 +151,7 @@ jobs:
           echo "boot.img успішно витягнуто:"
           ls -lh boot.img
 
-            - name: Unpack boot.img and patch kernel payload
+      - name: Unpack boot.img and patch kernel payload
         run: |
           mkdir -p boot_work
           cd boot_work
@@ -164,12 +167,17 @@ jobs:
           
           echo "Перевірка стиснення ядра..."
           if file kernel | grep -qi "gzip"; then
+            echo "Виявлено стиснуте ядро (Gzip). Розпаковуємо..."
             mv kernel kernel.gz && gunzip kernel.gz
           elif file kernel | grep -qi "LZ4"; then
+            echo "Виявлено стиснуте ядро (LZ4). Розпаковуємо..."
             sudo apt-get install -y lz4
             mv kernel kernel.lz4 && lz4 -d kernel.lz4 kernel
           elif file kernel | grep -qi "bzip2"; then
+            echo "Виявлено стиснуте ядро (Bzip2). Розпаковуємо..."
             mv kernel kernel.bz2 && bunzip2 kernel.bz2
+          else
+            echo "Ядро не стиснуте або формат невідомий. Продовжуємо як є."
           fi
 
           echo "Очищення ядра від appended DTB та створення нового boot.img..."
@@ -182,7 +190,9 @@ jobs:
           if boot[:8] != b"ANDROID!":
               raise SystemExit("Помилка: вхідний файл не є Android boot image")
 
+          # Зчитуємо розмір заголовка
           header_size = struct.unpack_from("<I", boot, 20)[0]
+          # Ядро завжди вирівнюється на 4096 байт після заголовка
           kernel_offset = (header_size + 4095) & ~4095
 
           with open("kernel", "rb") as f:
@@ -200,7 +210,8 @@ jobs:
           # Оновлюємо розмір ядра у заголовку boot.img (зміщення 8)
           struct.pack_into("<I", boot, 8, len(kernel))
 
-          # Склеюємо заголовок і очищене ядро
+          # Склеюємо заголовок (до початку ядра) і розпаковане ядро. 
+          # generate_target.py не читає ramdisk, тому ми його відкидаємо.
           with open("new_boot.img", "wb") as f:
               f.write(boot[:kernel_offset])
               f.write(kernel)
