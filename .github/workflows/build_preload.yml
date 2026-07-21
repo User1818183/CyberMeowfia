@@ -49,11 +49,12 @@ jobs:
               "https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
           )"
 
+          # Використано одинарні лапки для jq, щоб Bash не ламав екранування \.
           MAGISK_URL="$(
             echo "$RELEASE_JSON" |
               jq -r '
                 .assets[]
-                | select(.name | test("^Magisk-v.*\.apk$"))
+                | select(.name | test("^Magisk-v.*\\.apk$"))
                 | .browser_download_url
               ' |
               head -n 1
