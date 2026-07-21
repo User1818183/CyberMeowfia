@@ -34,15 +34,16 @@ jobs:
       - name: Install dependencies (llvm, magiskboot, python3)
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm python3 python3-pip unzip wget tar
-          # Встановлюємо git та компілюємо magiskboot для розпакування boot.img
-          sudo apt-get install -y git g++ make
+          sudo apt-get install -y llvm python3 python3-pip unzip wget tar git g++ make
+          
+          # Завантажуємо та компілюємо magiskboot для розпакування boot.img
           git clone --depth=1 https://github.com/topjohnwu/Magisk.git /tmp/magisk
-          cd /tmp/magisk/scripts
+          cd /tmp/magisk/native/src/boot
+          # Створюємо фіктивний base.hpp, щоб задовольнити залежності компіляції
+          touch base.hpp
           # Компілюємо magiskboot
-          ./build.sh binary
-          # Копіюємо скомпільований magiskboot у /usr/local/bin
-          sudo cp /tmp/magisk/scripts/bin/magiskboot /usr/local/bin/
+          g++ -std=c++17 -I/tmp/magisk/native/include -I. magiskboot/main.cpp magiskboot/bootimg.cpp magiskboot/conv.cpp magiskboot/compress.cpp magiskboot/format.cpp magiskboot/hexpatch.cpp magiskboot/pattern.cpp magiskboot/cpio.cpp magiskboot/sha256.cpp magiskboot/dtb.cpp magiskboot/ramdisk.cpp -o /usr/local/bin/magiskboot -lz -llzma -lbz2 -lz4
+          
           # Перевіряємо, що llvm-objdump та magiskboot доступні
           llvm-objdump --version
           magiskboot --help || true
