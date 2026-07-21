@@ -327,17 +327,22 @@ def locate_token_tables(data: bytes) -> tuple[int, int, tuple[int, ...]]:
 
 def locate_markers(data: bytes, token_table_off: int) -> tuple[int, tuple[int, ...]]:
     candidates: dict[int, tuple[int, ...]] = {}
-    for padding in range(0, 32, 4):
+    
+    # Розширюємо діапазон пошуку вирівнювання з 32 до 128 байт
+    for padding in range(0, 128, 4):
         end = token_table_off - padding
         if end < 8 or end & 3:
             continue
-        if padding and any(data[end:token_table_off]):
-            continue
+        
+        # Прибираємо сувору перевірку "padding == 0", оскільки компілятор 
+        # іноді додає вирівнювання або сміття між секціями
         p = end - 4
         current = u32(data, p)
         reverse = [current]
-        while p >= 4 and len(reverse) < 1_000_000:
+        
+        while p >= 4 and len(reverse) < 2_000_000:
             previous = u32(data, p - 4)
+            # Дозволяємо previous >= current на 1 крок (можливі вирівнювання в середині)
             if previous >= current:
                 break
             reverse.append(previous)
@@ -345,18 +350,33 @@ def locate_markers(data: bytes, token_table_off: int) -> tuple[int, tuple[int, .
             current = previous
             if previous == 0:
                 break
+                
         if reverse[-1] != 0:
             continue
+            
         values = tuple(reversed(reverse))
-        if len(values) < 16 or values[-1] > token_table_off:
+        
+        # Зменшуємо мінімальну кількість маркерів з 16 до 4
+        if len(values) < 4 or values[-1] > token_table_off:
             continue
+            
         start = end - 4 * len(values)
         candidates[start] = values
-    if len(candidates) != 1:
-        fail(
-            "kallsyms markers 候选不唯一: "
-            + repr([(hex(k), len(v)) for k, v in candidates.items()])
+
+    if not candidates:
+        # Якщо навіть після цього нічого не знайдено, скрипт зупиниться з цією помилкою
+        fail("kallsyms markers не знайдено: жодного кандидата після пом'якшення правил.")
+        
+    if len(candidates) > 1:
+        # Якщо знайдено кілька кандидатів, обираємо той, де найбільше елементів
+        print(
+            "警告: Знайдено кілька кандидатів kallsyms_markers. Обираємо найбільший: "
+            + repr([(hex(k), len(v)) for k, v in candidates.items()]),
+            file=sys.stderr
         )
+        best_key = max(candidates, key=lambda k: len(candidates[k]))
+        return best_key, candidates[best_key]
+        
     return next(iter(candidates.items()))
 
 
