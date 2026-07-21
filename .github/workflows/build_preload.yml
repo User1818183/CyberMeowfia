@@ -31,86 +31,20 @@ jobs:
           ndk-version: r29
           add-to-path: false
 
-      - name: Install dependencies (llvm, python3, jq, curl)
+      - name: Install dependencies (llvm, python3, zstd, lz4)
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm python3 python3-pip unzip wget tar jq curl
-
-      - name: Download latest Magisk
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          RELEASE_JSON="$(
-            curl --fail \
-              --silent \
-              --show-error \
-              --location \
-              "https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
-          )"
-
-          MAGISK_URL="$(
-            echo "$RELEASE_JSON" |
-              jq -r '
-                .assets[]
-                | select(.name | test("^Magisk-v.*\\.apk$"))
-                | .browser_download_url
-              ' |
-              head -n 1
-          )"
-
-          if [[ -z "$MAGISK_URL" || "$MAGISK_URL" == "null" ]]; then
-            echo "::error::Could not find Magisk APK in latest release"
-            exit 1
-          fi
-
-          echo "Downloading: $MAGISK_URL"
-          curl \
-            --fail \
-            --location \
-            --retry 3 \
-            --output Magisk.apk \
-            "$MAGISK_URL"
-
-          unzip -q Magisk.apk -d magisk-apk
-
-      - name: Extract magiskboot
-        shell: bash
-        run: |
-          set -euo pipefail
-
-          MAGISKBOOT="$(
-            find magisk-apk \
-              -type f \
-              \( \
-                -path "*/lib/x86_64/libmagiskboot.so" \
-                -o -path "*/lib/x86/libmagiskboot.so" \
-              \) |
-              head -n 1
-          )"
-
-          if [[ -z "$MAGISKBOOT" ]]; then
-            echo "::error::x86_64 magiskboot was not found inside Magisk APK"
-            find magisk-apk -iname '*magiskboot*' -print
-            exit 1
-          fi
-
-          cp "$MAGISKBOOT" ./magiskboot
-          chmod +x ./magiskboot
-
-          # Копіюємо в /usr/local/bin для зручності використання в наступних кроках
-          sudo cp ./magiskboot /usr/local/bin/magiskboot
-          sudo chmod +x /usr/local/bin/magiskboot
-
-          ./magiskboot --help || true
+          sudo apt-get install -y llvm python3 python3-pip unzip wget tar zstd lz4
 
       - name: Create profile.json from inputs
         run: |
           echo "Створення тимчасового профілю з вхідних даних..."
-          jq -n \
-            --arg phys "${{ github.event.inputs.p0_phys_offset }}" \
-            --arg load "${{ github.event.inputs.p0_kernel_phys_load }}" \
-            '{p0_phys_offset: $phys, p0_kernel_phys_load: $load}' > dynamic_profile.json
+          cat <<EOF > dynamic_profile.json
+          {
+            "p0_phys_offset": "${{ github.event.inputs.p0_phys_offset }}",
+            "p0_kernel_phys_load": "${{ github.event.inputs.p0_kernel_phys_load }}"
+          }
+          EOF
           
           echo "Згенерований dynamic_profile.json:"
           cat dynamic_profile.json
@@ -126,7 +60,6 @@ jobs:
           echo "Розпаковка архіву..."
           unzip -q factory.zip -d unzipped
           
-          # Шукаємо вкладений архів (зазвичай Google пакує образи у image-*.zip)
           cd unzipped
           INNER_ZIP=$(find . -name "image-*.zip" -o -name "*.tar.gz" | head -n 1)
           
@@ -151,38 +84,14 @@ jobs:
           echo "boot.img успішно витягнуто:"
           ls -lh boot.img
 
-      - name: Unpack boot.img and patch kernel payload
+      - name: Extract, decompress, and clean kernel
+        shell: python
         run: |
-          mkdir -p boot_work
-          cd boot_work
-          cp ../boot.img .
-          
-          echo "Розпаковка boot.img за допомогою magiskboot..."
-          magiskboot unpack boot.img
-          
-          if [ ! -f kernel ]; then
-            echo "Помилка: kernel не знайдено після розпаковки!"
-            exit 1
-          fi
-          
-          echo "Перевірка стиснення ядра..."
-          if file kernel | grep -qi "gzip"; then
-            echo "Виявлено стиснуте ядро (Gzip). Розпаковуємо..."
-            mv kernel kernel.gz && gunzip kernel.gz
-          elif file kernel | grep -qi "LZ4"; then
-            echo "Виявлено стиснуте ядро (LZ4). Розпаковуємо..."
-            sudo apt-get install -y lz4
-            mv kernel kernel.lz4 && lz4 -d kernel.lz4 kernel
-          elif file kernel | grep -qi "bzip2"; then
-            echo "Виявлено стиснуте ядро (Bzip2). Розпаковуємо..."
-            mv kernel kernel.bz2 && bunzip2 kernel.bz2
-          else
-            echo "Ядро не стиснуте або формат невідомий. Продовжуємо як є."
-          fi
-
-          echo "Очищення ядра від appended DTB та створення нового boot.img..."
-          python3 - <<'EOF'
           import struct
+          import gzip
+          import bz2
+          import subprocess
+          import os
 
           with open("boot.img", "rb") as f:
               boot = bytearray(f.read())
@@ -190,50 +99,69 @@ jobs:
           if boot[:8] != b"ANDROID!":
               raise SystemExit("Помилка: вхідний файл не є Android boot image")
 
-          # Зчитуємо розмір заголовка
+          # Зчитуємо розмір заголовка та ядра
           header_size = struct.unpack_from("<I", boot, 20)[0]
+          kernel_size = struct.unpack_from("<I", boot, 8)[0]
+          
           # Ядро завжди вирівнюється на 4096 байт після заголовка
           kernel_offset = (header_size + 4095) & ~4095
 
-          with open("kernel", "rb") as f:
-              kernel = f.read()
+          kernel_payload = boot[kernel_offset : kernel_offset + kernel_size]
+          print(f"Витягнуто ядро: {len(kernel_payload)} байт")
+
+          decompressed = None
+          
+          # Визначаємо тип стиснення за магічними числами
+          if kernel_payload[:2] == b'\x1f\x8b': # Gzip
+              print("Виявлено стиснення GZIP. Розпаковуємо...")
+              decompressed = gzip.decompress(kernel_payload)
+          elif kernel_payload[:4] == b'\x28\xb5\x2f\xfd': # Zstd
+              print("Виявлено стиснення ZSTD. Розпаковуємо...")
+              with open("kernel.zst", "wb") as f: f.write(kernel_payload)
+              subprocess.run(["zstd", "-d", "-f", "kernel.zst", "-o", "kernel_dec"], check=True)
+              with open("kernel_dec", "rb") as f: decompressed = f.read()
+          elif kernel_payload[:4] in [b'\x02\x21\x4c\x18', b'\x04\x22\x4d\x18']: # LZ4
+              print("Виявлено стиснення LZ4. Розпаковуємо...")
+              with open("kernel.lz4", "wb") as f: f.write(kernel_payload)
+              subprocess.run(["lz4", "-d", "-f", "kernel.lz4", "kernel_dec"], check=True)
+              with open("kernel_dec", "rb") as f: decompressed = f.read()
+          elif kernel_payload[:3] == b'BZh': # Bzip2
+              print("Виявлено стиснення BZIP2. Розпаковуємо...")
+              decompressed = bz2.decompress(kernel_payload)
+          else:
+              print("Стиснення не виявлено (сирий Image).")
+              decompressed = kernel_payload
+
+          # Перевіряємо наявність магічного числа ARM64
+          if len(decompressed) < 0x3C or decompressed[0x38:0x3C] != b"ARM\x64":
+              print("Увага: ARM64 magic не знайдено! Можливо ядро використовує незвичайний формат.")
 
           # Зчитуємо справжній розмір Image з заголовка arm64 (зміщення 0x10)
-          image_size = struct.unpack_from("<Q", kernel, 16)[0]
-          
-          if image_size < len(kernel):
-              print(f"Виявлено додаткові дані (DTB/сміття) після ядра. Обрізаємо з {len(kernel)} до {image_size} байт.")
-              kernel = kernel[:image_size]
-          elif image_size > len(kernel):
-              print("Увага: image_size більший за розмір файлу ядра!")
+          image_size = struct.unpack_from("<Q", decompressed, 16)[0]
+          print(f"Розмір Image з заголовка: {image_size} байт")
+
+          # Обрізаємо зайві дані (appended DTB / сміття)
+          if 0 < image_size < len(decompressed):
+              print(f"Обрізаємо ядро з {len(decompressed)} до {image_size} байт (видалення appended DTB).")
+              kernel = decompressed[:image_size]
+          else:
+              kernel = decompressed
 
           # Оновлюємо розмір ядра у заголовку boot.img (зміщення 8)
           struct.pack_into("<I", boot, 8, len(kernel))
 
-          # Склеюємо заголовок (до початку ядра) і розпаковане ядро. 
-          # generate_target.py не читає ramdisk, тому ми його відкидаємо.
-          with open("new_boot.img", "wb") as f:
+          # Склеюємо заголовок (до початку ядра) і очищене ядро
+          with open("boot_uncompressed.img", "wb") as f:
               f.write(boot[:kernel_offset])
               f.write(kernel)
 
-          print(f"Створено new_boot.img з очищеним ядром. Розмір ядра: {len(kernel)} байт.")
-          EOF
-
-          if [ ! -f new_boot.img ]; then
-            echo "Помилка: не вдалося створити new_boot.img!"
-            exit 1
-          fi
-          
-          cp new_boot.img ../boot_uncompressed.img
-          cd ..
-          echo "Створено boot_uncompressed.img:"
-          ls -lh boot_uncompressed.img
+          print(f"Успішно створено boot_uncompressed.img. Розмір ядра: {len(kernel)} байт.")
 
       - name: Generate target.h
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          echo "Генерація target.h з розпакованого boot.img..."
+          echo "Генерація target.h з очищеного boot.img..."
           python3 generate_target.py \
             --boot boot_uncompressed.img \
             --profile dynamic_profile.json \
