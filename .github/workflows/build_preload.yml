@@ -34,15 +34,38 @@ jobs:
       - name: Install dependencies (llvm, magiskboot, python3)
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm python3 python3-pip unzip wget tar git g++ make
+          sudo apt-get install -y llvm python3 python3-pip unzip wget tar
+
+          echo "Завантаження Magisk для отримання magiskboot..."
+          wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.apk -O /tmp/magisk.apk
           
-          # Завантажуємо та компілюємо magiskboot для розпакування boot.img
-          git clone --depth=1 https://github.com/topjohnwu/Magisk.git /tmp/magisk
-          cd /tmp/magisk/native/src/boot
-          # Створюємо фіктивний base.hpp, щоб задовольнити залежності компіляції
-          touch base.hpp
-          # Компілюємо magiskboot
-          g++ -std=c++17 -I/tmp/magisk/native/include -I. magiskboot/main.cpp magiskboot/bootimg.cpp magiskboot/conv.cpp magiskboot/compress.cpp magiskboot/format.cpp magiskboot/hexpatch.cpp magiskboot/pattern.cpp magiskboot/cpio.cpp magiskboot/sha256.cpp magiskboot/dtb.cpp magiskboot/ramdisk.cpp -o /usr/local/bin/magiskboot -lz -llzma -lbz2 -lz4
+          # .apk файл — це просто ZIP-архів. Розпаковуємо його.
+          mkdir -p /tmp/magisk_extracted
+          unzip -q /tmp/magisk.apk -d /tmp/magisk_extracted
+          
+          # Бінарник magiskboot лежить у теці lib/<arch>/ (може бути arm64-v8a або x86_64)
+          # Спочатку шукаємо версію для x86_64 (оскільки GitHub Action працює на x86_64), 
+          # якщо не знайдемо — беремо arm64 і будемо запускати через емулятор (qemu)
+          MAGISKBOOT_BIN=$(find /tmp/magisk_extracted/lib -name "magiskboot" | grep "x86_64" | head -n 1)
+          
+          if [ -z "$MAGISKBOOT_BIN" ]; then
+            echo "Бінарник для x86_64 не знайдено, шукаємо arm64..."
+            MAGISKBOOT_BIN=$(find /tmp/magisk_extracted/lib -name "magiskboot" | grep "arm64-v8a" | head -n 1)
+            if [ -n "$MAGISKBOOT_BIN" ]; then
+              # Встановлюємо QEMU для запуску ARM64 бінарників на x86_64
+              sudo apt-get install -y qemu-user-static
+            fi
+          fi
+          
+          if [ -z "$MAGISKBOOT_BIN" ]; then
+            echo "Помилка: magiskboot не знайдено в APK!"
+            exit 1
+          fi
+          
+          echo "Знайдено magiskboot: $MAGISKBOOT_BIN"
+          # Копіюємо бінарник у /usr/local/bin
+          sudo cp "$MAGISKBOOT_BIN" /usr/local/bin/magiskboot
+          sudo chmod +x /usr/local/bin/magiskboot
           
           # Перевіряємо, що llvm-objdump та magiskboot доступні
           llvm-objdump --version
