@@ -31,20 +31,31 @@ jobs:
           ndk-version: r29
           add-to-path: false
 
-      - name: Install dependencies (llvm, python3, utils)
+      - name: Install dependencies (llvm, magiskboot, python3)
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm python3 python3-pip unzip wget tar jq
-          # Перевіряємо, що llvm-objdump доступний
+          sudo apt-get install -y llvm python3 python3-pip unzip wget tar
+          # Встановлюємо git та компілюємо magiskboot для розпакування boot.img
+          sudo apt-get install -y git g++ make
+          git clone --depth=1 https://github.com/topjohnwu/Magisk.git /tmp/magisk
+          cd /tmp/magisk/scripts
+          # Компілюємо magiskboot
+          ./build.sh binary
+          # Копіюємо скомпільований magiskboot у /usr/local/bin
+          sudo cp /tmp/magisk/scripts/bin/magiskboot /usr/local/bin/
+          # Перевіряємо, що llvm-objdump та magiskboot доступні
           llvm-objdump --version
+          magiskboot --help || true
 
       - name: Create profile.json from inputs
         run: |
           echo "Створення тимчасового профілю з вхідних даних..."
-          jq -n \
-            --arg phys "${{ github.event.inputs.p0_phys_offset }}" \
-            --arg load "${{ github.event.inputs.p0_kernel_phys_load }}" \
-            '{p0_phys_offset: $phys, p0_kernel_phys_load: $load}' > dynamic_profile.json
+          cat <<EOF > dynamic_profile.json
+          {
+            "p0_phys_offset": "${{ github.event.inputs.p0_phys_offset }}",
+            "p0_kernel_phys_load": "${{ github.event.inputs.p0_kernel_phys_load }}"
+          }
+          EOF
           
           echo "Згенерований dynamic_profile.json:"
           cat dynamic_profile.json
@@ -85,13 +96,50 @@ jobs:
           echo "boot.img успішно витягнуто:"
           ls -lh boot.img
 
+      - name: Unpack boot.img and extract kernel
+        run: |
+          mkdir -p boot_unpacked
+          cd boot_unpacked
+          cp ../boot.img .
+          
+          echo "Розпаковка boot.img за допомогою magiskboot..."
+          magiskboot unpack boot.img
+          
+          # magiskboot створює файл 'kernel'. Перевіряємо, чи він стиснутий
+          # і розпаковуємо його (gzip, LZ4, bzip2 тощо)
+          if file kernel | grep -qi "gzip"; then
+            echo "Виявлено стиснуте ядро (Gzip). Розпаковуємо..."
+            mv kernel kernel.gz
+            gunzip kernel.gz
+          elif file kernel | grep -qi "LZ4"; then
+            echo "Виявлено стиснуте ядро (LZ4). Розпаковуємо..."
+            sudo apt-get install -y lz4
+            mv kernel kernel.lz4
+            lz4 -d kernel.lz4 kernel
+          elif file kernel | grep -qi "bzip2"; then
+            echo "Виявлено стиснуте ядро (Bzip2). Розпаковуємо..."
+            mv kernel kernel.bz2
+            bunzip2 kernel.bz2
+          fi
+          
+          # Перевіряємо, чи ядро тепер має правильний заголовок
+          if [ -f kernel ]; then
+            cp kernel ../kernel.bin
+            cd ..
+            echo "Ядро успішно підготовлено:"
+            ls -lh kernel.bin
+          else
+            echo "Помилка: не вдалося знайти ядро після розпаковки!"
+            exit 1
+          fi
+
       - name: Generate target.h
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          echo "Генерація target.h..."
+          echo "Генерація target.h з розпакованого ядра..."
           python3 generate_target.py \
-            --boot boot.img \
+            --boot kernel.bin \
             --profile dynamic_profile.json \
             -o source/src/target.h
 
