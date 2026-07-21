@@ -31,38 +31,78 @@ jobs:
           ndk-version: r29
           add-to-path: false
 
-      - name: Install dependencies (llvm, magiskboot, python3)
+      - name: Install dependencies (llvm, python3, jq, curl)
         run: |
           sudo apt-get update
-          sudo apt-get install -y llvm python3 python3-pip unzip wget tar
+          sudo apt-get install -y llvm python3 python3-pip unzip wget tar jq curl
 
-          echo "Завантаження Magisk ZIP для отримання magiskboot..."
-          # Використовуємо посилання на ZIP-архів Magisk з GitHub Releases
-          wget -q https://github.com/topjohnwu/Magisk/releases/download/v27.0/Magisk-v27.0.zip -O /tmp/magisk.zip
-          
-          # Розпаковуємо архів
-          mkdir -p /tmp/magisk_extracted
-          unzip -q /tmp/magisk.zip -d /tmp/magisk_extracted
-          
-          # У ZIP-архіві бінарник magiskboot лежить у теці arm64-v8a/
-          MAGISKBOOT_BIN="/tmp/magisk_extracted/arm64-v8a/magiskboot"
-          
-          if [ ! -f "$MAGISKBOOT_BIN" ]; then
-            echo "Помилка: magiskboot не знайдено в ZIP-архіві!"
-            find /tmp/magisk_extracted -name "magiskboot" -type f
+      - name: Download latest Magisk
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          RELEASE_JSON="$(
+            curl --fail \
+              --silent \
+              --show-error \
+              --location \
+              "https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
+          )"
+
+          MAGISK_URL="$(
+            echo "$RELEASE_JSON" |
+              jq -r '
+                .assets[]
+                | select(.name | test("^Magisk-v.*\.apk$"))
+                | .browser_download_url
+              ' |
+              head -n 1
+          )"
+
+          if [[ -z "$MAGISK_URL" || "$MAGISK_URL" == "null" ]]; then
+            echo "::error::Could not find Magisk APK in latest release"
             exit 1
           fi
-          
-          echo "Знайдено magiskboot: $MAGISKBOOT_BIN"
-          # Копіюємо бінарник у /usr/local/bin
-          sudo cp "$MAGISKBOOT_BIN" /usr/local/bin/magiskboot
+
+          echo "Downloading: $MAGISK_URL"
+          curl \
+            --fail \
+            --location \
+            --retry 3 \
+            --output Magisk.apk \
+            "$MAGISK_URL"
+
+          unzip -q Magisk.apk -d magisk-apk
+
+      - name: Extract magiskboot
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          MAGISKBOOT="$(
+            find magisk-apk \
+              -type f \
+              \( \
+                -path "*/lib/x86_64/libmagiskboot.so" \
+                -o -path "*/lib/x86/libmagiskboot.so" \
+              \) |
+              head -n 1
+          )"
+
+          if [[ -z "$MAGISKBOOT" ]]; then
+            echo "::error::x86_64 magiskboot was not found inside Magisk APK"
+            find magisk-apk -iname '*magiskboot*' -print
+            exit 1
+          fi
+
+          cp "$MAGISKBOOT" ./magiskboot
+          chmod +x ./magiskboot
+
+          # Копіюємо в /usr/local/bin для зручності використання в наступних кроках
+          sudo cp ./magiskboot /usr/local/bin/magiskboot
           sudo chmod +x /usr/local/bin/magiskboot
-          
-          # Перевіряємо, що llvm-objdump та magiskboot доступні
-          echo "Перевірка llvm-objdump:"
-          llvm-objdump --version
-          echo "Перевірка magiskboot:"
-          magiskboot --help || true
+
+          ./magiskboot --help || true
 
       - name: Create profile.json from inputs
         run: |
