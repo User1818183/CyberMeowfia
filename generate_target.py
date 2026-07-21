@@ -326,59 +326,85 @@ def locate_token_tables(data: bytes) -> tuple[int, int, tuple[int, ...]]:
 
 
 def locate_markers(data: bytes, token_table_off: int) -> tuple[int, tuple[int, ...]]:
+    if token_table_off < 0 or token_table_off > len(data):
+        fail(f"invalid token_table_off: {token_table_off:#x}")
+
     candidates: dict[int, tuple[int, ...]] = {}
-    
-    # Розширюємо діапазон пошуку вирівнювання з 32 до 128 байт
-    for padding in range(0, 128, 4):
+
+    MAX_PADDING = 128
+    MIN_MARKERS = 16      # можна повернути 4 якщо дуже треба
+    MAX_MARKERS = 262144  # захист від нескінченного пошуку
+
+    for padding in range(0, MAX_PADDING + 1, 4):
         end = token_table_off - padding
-        if end < 8 or end & 3:
+
+        if end < 4 or (end & 3):
             continue
-        
-        # Прибираємо сувору перевірку "padding == 0", оскільки компілятор 
-        # іноді додає вирівнювання або сміття між секціями
-        p = end - 4
-        current = u32(data, p)
+
+        start_pos = end - 4
+
+        try:
+            current = u32(data, start_pos)
+        except Exception:
+            continue
+
         reverse = [current]
-        
-        while p >= 4 and len(reverse) < 2_000_000:
+        p = start_pos
+
+        while p >= 4 and len(reverse) < MAX_MARKERS:
             previous = u32(data, p - 4)
-            # Дозволяємо previous >= current на 1 крок (можливі вирівнювання в середині)
+
+            # читаємо назад, тому значення повинні спадати
             if previous >= current:
                 break
+
             reverse.append(previous)
+
             p -= 4
             current = previous
+
             if previous == 0:
                 break
-                
+
         if reverse[-1] != 0:
             continue
-            
+
         values = tuple(reversed(reverse))
-        
-        # Зменшуємо мінімальну кількість маркерів з 16 до 4
-        if len(values) < 4 or values[-1] > token_table_off:
+
+        if len(values) < MIN_MARKERS:
             continue
-            
-        start = end - 4 * len(values)
+
+        # додаткова перевірка монотонності
+        if any(a >= b for a, b in zip(values, values[1:])):
+            continue
+
+        start = end - len(values) * 4
+
         candidates[start] = values
 
     if not candidates:
-        # Якщо навіть після цього нічого не знайдено, скрипт зупиниться з цією помилкою
-        fail("kallsyms markers не знайдено: жодного кандидата після пом'якшення правил.")
-        
-    if len(candidates) > 1:
-        # Якщо знайдено кілька кандидатів, обираємо той, де найбільше елементів
-        print(
-            "警告: Знайдено кілька кандидатів kallsyms_markers. Обираємо найбільший: "
-            + repr([(hex(k), len(v)) for k, v in candidates.items()]),
-            file=sys.stderr
-        )
-        best_key = max(candidates, key=lambda k: len(candidates[k]))
-        return best_key, candidates[best_key]
-        
-    return next(iter(candidates.items()))
+        fail("kallsyms markers not found")
 
+    if len(candidates) == 1:
+        return next(iter(candidates.items()))
+
+    # оцінка кандидата:
+    # 1. більше маркерів
+    # 2. менший padding
+    def score(item):
+        start, values = item
+        padding = token_table_off - (start + len(values) * 4)
+        return (len(values), -padding)
+
+    best = max(candidates.items(), key=score)
+
+    print(
+        "Warning: multiple kallsyms_markers candidates: "
+        + repr([(hex(k), len(v)) for k, v in candidates.items()]),
+        file=sys.stderr,
+    )
+
+    return best
 
 def compressed_symbol_end(data: bytes, pos: int, limit: int) -> int:
     if pos >= limit:
