@@ -49,7 +49,6 @@ jobs:
               "https://api.github.com/repos/topjohnwu/Magisk/releases/latest"
           )"
 
-          # Використано одинарні лапки для jq, щоб Bash не ламав екранування \.
           MAGISK_URL="$(
             echo "$RELEASE_JSON" |
               jq -r '
@@ -99,7 +98,6 @@ jobs:
           cp "$MAGISKBOOT" ./magiskboot
           chmod +x ./magiskboot
 
-          # Копіюємо в /usr/local/bin для зручності використання в наступних кроках
           sudo cp ./magiskboot /usr/local/bin/magiskboot
           sudo chmod +x /usr/local/bin/magiskboot
 
@@ -107,13 +105,10 @@ jobs:
 
       - name: Create profile.json from inputs
         run: |
-          echo "Створення тимчасового профілю з вхідних даних..."
-          cat <<EOF > dynamic_profile.json
-          {
-            "p0_phys_offset": "${{ github.event.inputs.p0_phys_offset }}",
-            "p0_kernel_phys_load": "${{ github.event.inputs.p0_kernel_phys_load }}"
-          }
-          EOF
+          jq -n \
+            --arg phys "${{ github.event.inputs.p0_phys_offset }}" \
+            --arg load "${{ github.event.inputs.p0_kernel_phys_load }}" \
+            '{p0_phys_offset: $phys, p0_kernel_phys_load: $load}' > dynamic_profile.json
           
           echo "Згенерований dynamic_profile.json:"
           cat dynamic_profile.json
@@ -129,7 +124,6 @@ jobs:
           echo "Розпаковка архіву..."
           unzip -q factory.zip -d unzipped
           
-          # Шукаємо вкладений архів (зазвичай Google пакує образи у image-*.zip)
           cd unzipped
           INNER_ZIP=$(find . -name "image-*.zip" -o -name "*.tar.gz" | head -n 1)
           
@@ -154,17 +148,21 @@ jobs:
           echo "boot.img успішно витягнуто:"
           ls -lh boot.img
 
-      - name: Unpack boot.img and extract kernel
+      - name: Unpack, decompress, and repack boot.img
         run: |
-          mkdir -p boot_unpacked
-          cd boot_unpacked
+          mkdir -p boot_work
+          cd boot_work
           cp ../boot.img .
           
           echo "Розпаковка boot.img за допомогою magiskboot..."
           magiskboot unpack boot.img
           
-          # magiskboot створює файл 'kernel'. Перевіряємо, чи він стиснутий
-          # і розпаковуємо його (gzip, LZ4, bzip2 тощо)
+          if [ ! -f kernel ]; then
+            echo "Помилка: kernel не знайдено після розпаковки!"
+            exit 1
+          fi
+          
+          echo "Перевірка стиснення ядра..."
           if file kernel | grep -qi "gzip"; then
             echo "Виявлено стиснуте ядро (Gzip). Розпаковуємо..."
             mv kernel kernel.gz
@@ -178,26 +176,30 @@ jobs:
             echo "Виявлено стиснуте ядро (Bzip2). Розпаковуємо..."
             mv kernel kernel.bz2
             bunzip2 kernel.bz2
+          else
+            echo "Ядро не стиснуте або формат невідомий. Продовжуємо як є."
           fi
           
-          # Перевіряємо, чи ядро тепер має правильний заголовок
-          if [ -f kernel ]; then
-            cp kernel ../kernel.bin
-            cd ..
-            echo "Ядро успішно підготовлено:"
-            ls -lh kernel.bin
-          else
-            echo "Помилка: не вдалося знайти ядро після розпаковки!"
+          echo "Перепакування boot.img з розпакованим ядром..."
+          magiskboot repack boot.img new_boot.img
+          
+          if [ ! -f new_boot.img ]; then
+            echo "Помилка: не вдалося перепакувати boot.img!"
             exit 1
           fi
+          
+          cp new_boot.img ../boot_uncompressed.img
+          cd ..
+          echo "Створено boot_uncompressed.img:"
+          ls -lh boot_uncompressed.img
 
       - name: Generate target.h
         env:
           ANDROID_NDK_HOME: ${{ steps.setup-ndk.outputs.ndk-path }}
         run: |
-          echo "Генерація target.h з розпакованого ядра..."
+          echo "Генерація target.h з розпакованого boot.img..."
           python3 generate_target.py \
-            --boot kernel.bin \
+            --boot boot_uncompressed.img \
             --profile dynamic_profile.json \
             -o source/src/target.h
 
