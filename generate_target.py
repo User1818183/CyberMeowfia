@@ -325,10 +325,6 @@ def locate_token_tables(data: bytes) -> tuple[int, int, tuple[int, ...]]:
     return next(iter(unique.values()))
 
 
-from __future__ import annotations
-
-import struct
-
 from vmlinux_to_elf.core.kallsyms import (
     KallsymsFinder,
     KallsymsNotFoundException,
@@ -631,12 +627,64 @@ def locate_u32_offset_table(
             continue
         candidates.append((pos, values))
         pos += 4
-    if len(candidates) != 1:
+
+    if len(candidates) == 1:
+        return candidates[0]
+
+    # Fallback for kernels whose symbol order or trailer differs from the
+    # strict pattern above (seen on some Android GKI 6.6 builds). Ask
+    # vmlinux-to-elf for the already-parsed kallsyms table location.
+    try:
+        finder = KallsymsFinder(kernel_img=data, bit_size=64)
+    except Exception as exc:
         fail(
             "只支持且必须唯一识别 u32 base-relative kallsyms 地址表；候选="
             + repr([hex(off) for off, _ in candidates])
+            + f"，且 vmlinux-to-elf 回退失败: {exc}"
         )
-    return candidates[0]
+
+    if not getattr(finder, "has_base_relative", False):
+        fail(
+            "kallsyms 地址表不是 base-relative；当前仅支持 u32 base-relative"
+        )
+
+    finder_num = getattr(finder, "num_symbols", None)
+    if not isinstance(finder_num, int) or finder_num <= 0:
+        fail("vmlinux-to-elf 未返回有效的 kallsyms 符号数量")
+    if finder_num != len(names):
+        fail(
+            "vmlinux-to-elf 符号数量与 names 解码不一致: "
+            f"finder={finder_num}, names={len(names)}"
+        )
+
+    address_table_off = getattr(finder, "kallsyms_addresses_or_offsets__offset", None)
+    if not isinstance(address_table_off, int) or address_table_off < 0:
+        fail("vmlinux-to-elf 未返回有效的 kallsyms 地址表偏移")
+
+    table_bytes = finder_num * 4
+    if address_table_off & 3 or address_table_off + table_bytes > len(data):
+        fail(
+            "vmlinux-to-elf 返回的 kallsyms 地址表范围非法: "
+            f"off=0x{address_table_off:x}, bytes=0x{table_bytes:x}"
+        )
+
+    values = struct.unpack_from(f"<{finder_num}I", data, address_table_off)
+    if values[0] != 0:
+        fail(
+            "kallsyms u32 offsets 表首项不是 _text=0: "
+            f"off=0x{address_table_off:x}, first=0x{values[0]:x}"
+        )
+    if any(value > image_size for value in values):
+        fail("kallsyms u32 offsets 表存在越界 image_size 的条目")
+    if not all(values[i] <= values[i + 1] for i in range(len(values) - 1)):
+        fail("kallsyms u32 offsets 表不是非降序")
+
+    print(
+        "警告: 使用 vmlinux-to-elf 回退定位 kallsyms u32 offsets 表: "
+        f"off=0x{address_table_off:x}",
+        file=sys.stderr,
+    )
+    return address_table_off, values
 
 
 def infer_relative_base_off_66(data: bytes, address_table_off: int, num_syms: int) -> tuple[int, int]:
@@ -1337,8 +1385,64 @@ def validate_btf_consumer_layout(btf: BTFInfo) -> None:
     for name in ("task", "lock", "ww_ctx"):
         require_size("rt_mutex_waiter", name, 8)
     require_size("rt_mutex_waiter", "wake_state", 4)
-    require_size("rt_waiter_node", "prio", 4)
-    require_size("rt_waiter_node", "deadline", 8)
+
+    try:
+        btf.struct("rt_waiter_node")
+        has_waiter_node = True
+    except GenerationError:
+        has_waiter_node = False
+
+    if has_waiter_node:
+        require_size("rt_waiter_node", "prio", 4)
+        require_size("rt_waiter_node", "deadline", 8)
+    else:
+        # Linux 6.6/GKI variants may embed prio/deadline directly in
+        # rt_mutex_waiter and rename tree fields to *_entry.
+        require_size("rt_mutex_waiter", "prio", 4)
+        require_size("rt_mutex_waiter", "deadline", 8)
+
+
+def btf_field_any(btf: BTFInfo, struct_name: str, candidates: tuple[str, ...]) -> int:
+    values: list[int] = []
+    for field in candidates:
+        try:
+            values.append(btf.field(struct_name, field))
+        except GenerationError:
+            continue
+    unique = sorted(set(values))
+    if len(unique) != 1:
+        fail(
+            f"BTF 字段 {struct_name} 候选不唯一/不存在: "
+            f"fields={candidates}, values={[hex(v) for v in unique]}"
+        )
+    return unique[0]
+
+
+def waiter_layout_fields(btf: BTFInfo) -> dict[str, int]:
+    tree_entry_off = btf_field_any(btf, "rt_mutex_waiter", ("tree", "tree_entry"))
+    pi_tree_entry_off = btf_field_any(btf, "rt_mutex_waiter", ("pi_tree", "pi_tree_entry"))
+
+    try:
+        prio_in_node = btf.field("rt_waiter_node", "prio")
+        deadline_in_node = btf.field("rt_waiter_node", "deadline")
+        prio_off = tree_entry_off + prio_in_node
+        deadline_off = tree_entry_off + deadline_in_node
+        pi_prio_off = pi_tree_entry_off + prio_in_node
+        pi_deadline_off = pi_tree_entry_off + deadline_in_node
+    except GenerationError:
+        prio_off = btf.field("rt_mutex_waiter", "prio")
+        deadline_off = btf.field("rt_mutex_waiter", "deadline")
+        pi_prio_off = prio_off
+        pi_deadline_off = deadline_off
+
+    return {
+        "tree_entry_off": tree_entry_off,
+        "pi_tree_entry_off": pi_tree_entry_off,
+        "prio_off": prio_off,
+        "deadline_off": deadline_off,
+        "pi_prio_off": pi_prio_off,
+        "pi_deadline_off": pi_deadline_off,
+    }
 
 
 PROFILE_FIELDS = {
@@ -1528,7 +1632,8 @@ def derive_pselect_layout(
         names["futex_dispatch"],
     )
     frames = {key: first_sp_frame(text, names[key]) for key, text in dis.items()}
-    pi_tree = btf.field("rt_mutex_waiter", "pi_tree")
+    waiter_layout = waiter_layout_fields(btf)
+    pi_tree = waiter_layout["pi_tree_entry_off"]
     waiter_candidates: list[tuple[str, int]] = []
     for reg, imm_text in re.findall(
         r"\badd\s+(x\d+),\s*sp,\s*#0x([0-9a-f]+)", dis["futex_wait"], re.I
@@ -1854,14 +1959,15 @@ def build_header(
     address("SLIDE_ROOT_TASK_GROUP_IMAGE", symbol("root_task_group"))
 
     h.section("waiter and fake task fields")
+    waiter_layout = waiter_layout_fields(btf)
     waiter_fields = {
-        "WAITER_TREE_ENTRY_OFF": btf.field("rt_mutex_waiter", "tree"),
-        "WAITER_PI_TREE_ENTRY_OFF": btf.field("rt_mutex_waiter", "pi_tree"),
+        "WAITER_TREE_ENTRY_OFF": waiter_layout["tree_entry_off"],
+        "WAITER_PI_TREE_ENTRY_OFF": waiter_layout["pi_tree_entry_off"],
         "WAITER_TASK_OFF": btf.field("rt_mutex_waiter", "task"),
         "WAITER_LOCK_OFF": btf.field("rt_mutex_waiter", "lock"),
         "WAITER_WAKE_STATE_OFF": btf.field("rt_mutex_waiter", "wake_state"),
-        "WAITER_PRIO_OFF": btf.field("rt_mutex_waiter", "tree") + btf.field("rt_waiter_node", "prio"),
-        "WAITER_DEADLINE_OFF": btf.field("rt_mutex_waiter", "tree") + btf.field("rt_waiter_node", "deadline"),
+        "WAITER_PRIO_OFF": waiter_layout["prio_off"],
+        "WAITER_DEADLINE_OFF": waiter_layout["deadline_off"],
         "WAITER_WW_CTX_OFF": btf.field("rt_mutex_waiter", "ww_ctx"),
     }
     for name, value in waiter_fields.items():
@@ -1870,8 +1976,8 @@ def build_header(
         "FAKE_WAITER_TREE_PRIO_OFF": waiter_fields["WAITER_PRIO_OFF"],
         "FAKE_WAITER_TREE_DEADLINE_OFF": waiter_fields["WAITER_DEADLINE_OFF"],
         "FAKE_WAITER_PI_TREE_ENTRY_OFF": waiter_fields["WAITER_PI_TREE_ENTRY_OFF"],
-        "FAKE_WAITER_PI_TREE_PRIO_OFF": waiter_fields["WAITER_PI_TREE_ENTRY_OFF"] + btf.field("rt_waiter_node", "prio"),
-        "FAKE_WAITER_PI_TREE_DEADLINE_OFF": waiter_fields["WAITER_PI_TREE_ENTRY_OFF"] + btf.field("rt_waiter_node", "deadline"),
+        "FAKE_WAITER_PI_TREE_PRIO_OFF": waiter_layout["pi_prio_off"],
+        "FAKE_WAITER_PI_TREE_DEADLINE_OFF": waiter_layout["pi_deadline_off"],
         "FAKE_WAITER_TASK_OFF": waiter_fields["WAITER_TASK_OFF"],
         "FAKE_WAITER_LOCK_OFF": waiter_fields["WAITER_LOCK_OFF"],
         "FAKE_WAITER_WAKE_STATE_OFF": waiter_fields["WAITER_WAKE_STATE_OFF"],
